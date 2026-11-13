@@ -3,7 +3,7 @@
 ; Expects the PyInstaller output in dist\ArtCoreMusic\.
 
 #define AppName      "ArtCore Music"
-#define AppVersion   "1.4.1"
+#define AppVersion   "1.4.2"
 #define AppPublisher "ArtCore"
 #define AppURL       "https://github.com/Ruf790/artcore-music"
 #define AppExe       "ArtCoreMusic.exe"
