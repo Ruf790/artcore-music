@@ -356,3 +356,76 @@ def test_tag_editor(qapp, mpvmod, media, data_dir, tmp_path):
     one.accept()
     assert meta.read(w.pl.tracks[2].path).genre == "Jungle" and meta.read(w.pl.tracks[2].path).artist == "ArtCore Band"
     w.close()
+
+
+def test_channel_meters_and_room(qapp, mpvmod, media, data_dir):
+    w = _win(mpvmod, channels="5.1")
+    w.open_paths([os.path.join(media, "Surround")])
+    assert pump(qapp, 6, lambda: len(w.levels.ch) == 6 and max(w.levels.rms.values()) > -40)
+    assert w.levels.ch == ["FL", "FC", "FR", "LFE", "SL", "SR"]
+    assert w.meters.isVisible() and w.meter_timer.isActive()
+    w.toggle_levels()
+    assert w.levels_win.isVisible() and "FLAC" in w.levels_win.head.text()
+    w.levels_win.room.grab()
+    w.meters.grab()
+    w.toggle_levels()
+    assert not w.levels_win.isVisible()
+    w.engine.set_paused(True)
+    pump(qapp, 1.5)
+    assert w.engine.levels() == []                                # paused: nothing on the meters
+    w.stop()
+    pump(qapp, 0.3)
+    assert not w.meters.isVisible() and not w.meter_timer.isActive()
+    w.cfg["meters"] = False
+    w._meters_need()
+    assert not w.meters.isVisible()
+    w.close()
+
+
+def test_upmix_meters_reach_the_rears(qapp, mpvmod, media, data_dir):
+    w = _win(mpvmod, channels="5.1", upmix=True)
+    w.open_paths([os.path.join(media, "Stereo Album")])
+    assert pump(qapp, 6, lambda: len(w.levels.ch) == 6 and w.levels.rms.get("LFE", -99) > -60)
+    w.close()
+
+
+def test_mini_looks(qapp, mpvmod, media, data_dir):
+    w = _win(mpvmod)
+    w.open_paths([os.path.join(media, "Stereo Album")])
+    assert pump(qapp, 4, lambda: w.engine.cur is not None)
+    w.engine.set_paused(True)                                      # 4 s tracks: stay on this one
+    assert pump(qapp, 20, lambda: w.seekbar.peaks)                 # CI decodes slowly
+    w.toggle_mini()
+    m = w.mini
+    assert m.isVisible() and not m.strip and m.title.text()
+    assert m.seek.peaks == w.seekbar.peaks                          # the same waveform
+    assert m.cover.has_image()
+    w.toggle_shuffle()
+    assert m.b_shuffle.objectName() == "on"
+    w.toggle_shuffle()
+    v = w.vol.value()
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    ev = QWheelEvent(QPointF(20, 20), QPointF(20, 20), QPoint(0, 0), QPoint(0, 120), Qt.NoButton, Qt.NoModifier,
+                     Qt.NoScrollPhase, False)
+    QApplication.sendEvent(m, ev)
+    assert w.vol.value() == min(100, v + 5) and m.time.text().endswith("%")
+    m.grab()
+    w.switch_mini_look()
+    assert w.mini is not m and w.mini.strip and w.mini.isVisible() and w.mini.height() < 120
+    assert w.mini.seek.peaks == w.seekbar.peaks
+    w.mini.grab()
+    _close_popup_later(300, pick="85%")
+    w.mini_menu(w.mini.mapToGlobal(QPoint(10, 10)))
+    _close_popup_later(300)
+    w.mini_menu(w.mini.mapToGlobal(QPoint(10, 10)))
+    w.mini.toggle_pin()
+    assert not w.cfg["mini_on_top"]
+    w.mini.toggle_pin()
+    w.toggle_mini()
+    assert w.isVisible() and not w.mini.isVisible()
+    w.cfg["mini_style"] = "card"                                   # changed in the settings while hidden
+    w.toggle_mini()
+    assert not w.mini.strip
+    w.toggle_mini()
+    w.close()

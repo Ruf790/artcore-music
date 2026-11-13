@@ -57,8 +57,39 @@ def out_layout(mode: str, src_channels: int, upmix: bool) -> tuple[int, str]:
     return src_channels, ""
 
 
-def build(cfg: dict, src_channels: int, src_layout: str = "") -> str:
-    """The whole af chain for a file with src_channels channels."""
+METER = "@meter:lavfi=[astats=metadata=1:reset=1:measure_overall=none:measure_perchannel=Peak_level+RMS_level]"
+# channel names of what the meter sees, in ffmpeg's order (the rears of 5.1 are SL / SR: the Z906's surrounds)
+METER_NAMES = {1: ["FC"], 2: ["FL", "FR"], 3: ["FL", "FR", "FC"], 4: ["FL", "FR", "SL", "SR"],
+               5: ["FL", "FR", "FC", "SL", "SR"], 6: ["FL", "FR", "FC", "LFE", "SL", "SR"],
+               7: ["FL", "FR", "FC", "LFE", "BC", "SL", "SR"], 8: ["FL", "FR", "FC", "LFE", "BL", "BR", "SL", "SR"]}
+# how the meters lay them out: left to right as the speakers stand
+METER_ORDER = ["FL", "FC", "FR", "LFE", "SL", "BL", "BC", "BR", "SR"]
+
+
+def parse_meter(md: dict | None) -> list[tuple[str, float, float]]:
+    """af-metadata/meter → [(channel, rms dB, peak dB)] in METER_ORDER; -inf → -120."""
+    if not md:
+        return []
+    vals: dict[int, list[float]] = {}
+    for k, v in md.items():
+        bits = str(k).split(".")                  # lavfi.astats.<n>.RMS_level
+        if len(bits) != 4 or bits[1] != "astats" or not bits[2].isdigit():
+            continue
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            continue
+        if x != x or x < -120:                    # nan / -inf
+            x = -120.0
+        slot = vals.setdefault(int(bits[2]), [-120.0, -120.0])
+        slot[0 if bits[3] == "RMS_level" else 1] = x
+    names = METER_NAMES.get(len(vals)) or [f"{i}" for i in sorted(vals)]
+    out = [(names[i] if i < len(names) else str(i + 1), *vals[n]) for i, n in enumerate(sorted(vals))]
+    return sorted(out, key=lambda c: METER_ORDER.index(c[0]) if c[0] in METER_ORDER else 99)
+
+
+def build(cfg: dict, src_channels: int, src_layout: str = "", meter: bool = False) -> str:
+    """The whole af chain for a file with src_channels channels (+ the level meter at its end)."""
     mode = cfg.get("channels", "auto")
     parts = []
     ch, lay = src_channels, src_layout
@@ -71,6 +102,8 @@ def build(cfg: dict, src_channels: int, src_layout: str = "") -> str:
             ch, lay = 6, "5.1"
         parts.append(levels_filter(ch, lay, cfg.get("center_db", 0), cfg.get("lfe_db", 0)))
     parts.append(eq_filter(cfg.get("eq", [0] * 10)))
+    if meter:
+        parts.append(METER)
     return ",".join(p for p in parts if p)
 
 

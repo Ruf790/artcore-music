@@ -4,7 +4,8 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import (QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
+                           QRadialGradient)
 from PySide6.QtWidgets import (QAbstractItemView, QLabel, QListWidget, QListWidgetItem, QToolButton,
                                QTreeWidget, QWidget)
 
@@ -512,3 +513,204 @@ def elide(label: QLabel, text: str, width: int | None = None):
 
 def exists(path: str) -> bool:
     return "://" in path or os.path.exists(path)
+
+
+# ── channel levels ────────────────────────────────────────────
+FLOOR_DB = -48.0
+CH_LABEL = {"LFE": "SUB"}
+
+
+class LevelState:
+    """Smoothed levels for the meters: a bar jumps up at once and falls 26 dB/s; the peak stays 1.5 s, then falls."""
+    FALL, PEAK_HOLD, PEAK_FALL = 26.0, 1.5, 18.0
+
+    def __init__(self):
+        self.ch: list[str] = []
+        self.rms: dict[str, float] = {}
+        self.peak: dict[str, float] = {}
+        self.held: dict[str, float] = {}           # channel → when its peak was set
+        self.last = 0.0
+
+    def feed(self, levels: list[tuple[str, float, float]], now: float) -> bool:
+        """New readings (or [] = silence); True when something on screen changed."""
+        dt = min(0.2, now - self.last) if self.last else 0.03
+        self.last = now
+        if levels:
+            names = [c[0] for c in levels]
+            if names != self.ch:
+                self.ch = names
+                self.rms = {n: self.rms.get(n, FLOOR_DB) for n in names}
+                self.peak = {n: self.peak.get(n, FLOOR_DB) for n in names}
+        got = {c[0]: (c[1], c[2]) for c in levels}
+        changed = False
+        for n in self.ch:
+            rms, pk = got.get(n, (FLOOR_DB - 10, FLOOR_DB - 10))
+            old_r, old_p = self.rms[n], self.peak[n]
+            self.rms[n] = max(rms, old_r - self.FALL * dt, FLOOR_DB)
+            if pk >= old_p:
+                self.peak[n] = pk
+                self.held[n] = now
+            elif now - self.held.get(n, 0) > self.PEAK_HOLD:
+                self.peak[n] = max(FLOOR_DB, old_p - self.PEAK_FALL * dt, self.rms[n])
+            changed = changed or abs(self.rms[n] - old_r) > 0.05 or abs(self.peak[n] - old_p) > 0.05
+        return changed
+
+    def silent(self) -> bool:
+        return all(v <= FLOOR_DB + 0.01 for v in self.rms.values()) and \
+            all(v <= FLOOR_DB + 0.01 for v in self.peak.values())
+
+    @staticmethod
+    def frac(db: float) -> float:
+        return max(0.0, min(1.0, 1.0 - db / FLOOR_DB))
+
+
+def _meter_gradient(top: float, bottom: float) -> QLinearGradient:
+    g = QLinearGradient(0, bottom, 0, top)
+    g.setColorAt(0.0, QColor(style.ACCENT))
+    g.setColorAt(0.62, QColor(style.ACCENT2))
+    g.setColorAt(0.86, QColor("#d63384"))
+    g.setColorAt(1.0, QColor("#ff4d4f"))
+    return g
+
+
+class ChannelMeters(QWidget):
+    """Bars per channel with a dB grid and peak marks — under the cover. A click opens the room view."""
+    clicked = Signal()
+
+    def __init__(self, state: LevelState, parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.caption = ""
+        self.setFixedHeight(118)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        p.setPen(QPen(QColor(style.BORDER), 1))
+        p.setBrush(QColor(style.PANEL))
+        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), 10, 10)
+        top, bot, x0, x1 = 10.0, h - 24.0, 34.0, w - 10.0
+        f = QFont(self.font())
+        f.setPointSizeF(7)
+        p.setFont(f)
+        for db in (0, -12, -24, -36):
+            y = top + (bot - top) * (db / FLOOR_DB)
+            p.setPen(QColor(style.MUTED))
+            p.drawText(QRectF(2, y - 7, x0 - 7, 14), Qt.AlignRight | Qt.AlignVCenter, str(db))
+            p.setPen(QPen(QColor(255, 255, 255, 16), 1))
+            p.drawLine(QPointF(x0, y), QPointF(x1, y))
+        names = self.state.ch or ["FL", "FC", "FR", "LFE", "SL", "SR"]
+        slot = (x1 - x0) / len(names)
+        bw = min(30.0, slot * 0.5)
+        grad = _meter_gradient(top, bot)
+        for i, n in enumerate(names):
+            x = x0 + slot * i + (slot - bw) / 2
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 255, 255, 12))
+            p.drawRoundedRect(QRectF(x, top, bw, bot - top), 3, 3)
+            fr = LevelState.frac(self.state.rms.get(n, FLOOR_DB))
+            if fr > 0.002:
+                y = bot - (bot - top) * fr
+                p.setBrush(grad)
+                p.drawRoundedRect(QRectF(x, y, bw, bot - y), 3, 3)
+            pf = LevelState.frac(self.state.peak.get(n, FLOOR_DB))
+            if pf > 0.002:
+                y = bot - (bot - top) * pf
+                p.setBrush(QColor("#ffffff"))
+                p.drawRect(QRectF(x, y - 1, bw, 2))
+            f.setPointSizeF(8)
+            f.setBold(True)
+            p.setFont(f)
+            p.setPen(QColor(style.TEXT))
+            p.drawText(QRectF(x - 20, bot + 4, bw + 40, 16), Qt.AlignCenter, CH_LABEL.get(n, n))
+            f.setBold(False)
+        p.end()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit()
+
+
+class RoomMeters(QWidget):
+    """Top view of the room: every speaker glows and sends a beam to the listener as loud as it plays."""
+    POS = {"FL": (0.2, 0.2), "FC": (0.5, 0.12), "FR": (0.8, 0.2), "LFE": (0.7, 0.4), "SL": (0.12, 0.8),
+           "SR": (0.88, 0.8), "BL": (0.3, 0.92), "BR": (0.7, 0.92), "BC": (0.5, 0.92)}
+
+    def __init__(self, state: LevelState, labels: dict, parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.labels = labels
+        self.setMinimumSize(460, 330)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        p.setPen(QPen(QColor(style.BORDER), 1.2))
+        p.setBrush(QColor(style.PANEL))
+        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), 16, 16)
+        c = QPointF(w / 2, h * 0.6)
+        names = [n for n in (self.state.ch or ["FL", "FC", "FR", "LFE", "SL", "SR"]) if n in self.POS]
+        lv = {n: LevelState.frac(self.state.rms.get(n, FLOOR_DB)) for n in names}
+        for n in names:                                           # beams under everything
+            x, y = self.POS[n]
+            pt = QPointF(x * w, y * h)
+            a = lv[n]
+            if a > 0.01:
+                g = QLinearGradient(pt, c)
+                g.setColorAt(0, QColor(111, 66, 193, int(170 * a)))
+                g.setColorAt(1, QColor(111, 66, 193, 0))
+                p.setPen(QPen(QBrush(g), 2 + 7 * a, Qt.SolidLine, Qt.RoundCap))
+                p.drawLine(pt, c)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#3a4152"))
+        p.drawEllipse(c, 16, 16)
+        f = QFont(self.font())
+        f.setPointSizeF(8.5)
+        p.setFont(f)
+        p.setPen(QColor(style.MUTED))
+        p.drawText(QRectF(c.x() - 60, c.y() + 18, 120, 18), Qt.AlignCenter, self.labels.get("you", ""))
+        for n in names:
+            x, y = self.POS[n]
+            pt = QPointF(x * w, y * h)
+            a = lv[n]
+            if a > 0.01:
+                rad = 30 + 28 * a
+                rg = QRadialGradient(pt, rad)
+                rg.setColorAt(0, QColor(13, 110, 253, int(180 * a)))
+                rg.setColorAt(1, QColor(13, 110, 253, 0))
+                p.setPen(Qt.NoPen)
+                p.setBrush(rg)
+                p.drawEllipse(pt, rad, rad)
+            r = QRectF(pt.x() - 34, pt.y() - 26, 68, 52)
+            if a > 0.01:
+                gg = QLinearGradient(r.topLeft(), r.bottomRight())
+                gg.setColorAt(0, QColor(style.ACCENT))
+                gg.setColorAt(1, QColor(style.ACCENT2))
+                p.setBrush(gg)
+                p.setPen(Qt.NoPen)
+            else:
+                p.setBrush(QColor(style.PANEL2))
+                p.setPen(QPen(QColor(style.BORDER), 1.2))
+            p.drawRoundedRect(r, 10, 10)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(0, 0, 0, 90))
+            p.drawRoundedRect(QRectF(r.x() + 9, r.bottom() - 10, r.width() - 18, 4), 2, 2)
+            if a > 0.01:
+                p.setBrush(QColor("#ffffff"))
+                p.drawRoundedRect(QRectF(r.x() + 9, r.bottom() - 10, (r.width() - 18) * a, 4), 2, 2)
+            f.setPointSizeF(10)
+            f.setBold(True)
+            p.setFont(f)
+            p.setPen(QColor("#ffffff"))
+            p.drawText(QRectF(r.x(), r.y() + 3, r.width(), 20), Qt.AlignCenter, CH_LABEL.get(n, n))
+            f.setBold(False)
+            f.setPointSizeF(7.5)
+            p.setFont(f)
+            db = self.state.rms.get(n, FLOOR_DB)
+            p.setPen(QColor(255, 255, 255, 220) if a > 0.01 else QColor(style.MUTED))
+            p.drawText(QRectF(r.x() - 10, r.y() + 21, r.width() + 20, 14), Qt.AlignCenter,
+                       f"{db:.0f} dB" if db > FLOOR_DB + 0.5 else "—")
+        p.end()

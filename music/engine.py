@@ -181,7 +181,7 @@ class Deck(QObject):
         ch = int(ap.get("channel-count") or 0)
         if not ch:
             return ""
-        af = audio.build(cfg, ch, str(ap.get("channels") or ""))
+        af = audio.build(cfg, ch, str(ap.get("channels") or ""), meter=True)
         if af == self.af:
             return ""
         try:
@@ -394,6 +394,23 @@ class Engine(QObject):
         self.muted = bool(muted)
         for d in self.decks:
             d.set_volume(self.volume, self.muted)
+
+    def levels(self) -> list[tuple[str, float, float]]:
+        """What the speakers get right now: [(channel, rms dB, peak dB)] after upmix / levels / EQ, before the
+        volume; [] when nothing plays. During a crossfade — the louder of the two decks per channel."""
+        if self.stopped or self.paused:
+            return []
+        out: dict[str, list[float]] = {}
+        for d in self.decks:
+            if d.track is None:
+                continue
+            for name, rms, peak in audio.parse_meter(d.node("af-metadata/meter")):
+                gain = 20 * math.log10(max(1e-6, d.factor)) if d.factor < 1 else 0.0
+                cur = out.setdefault(name, [-120.0, -120.0])
+                cur[0] = max(cur[0], rms + gain)
+                cur[1] = max(cur[1], peak + gain)
+        return sorted(((k, v[0], v[1]) for k, v in out.items()),
+                      key=lambda c: audio.METER_ORDER.index(c[0]) if c[0] in audio.METER_ORDER else 99)
 
     def track_length(self) -> float:
         t = self.cur
