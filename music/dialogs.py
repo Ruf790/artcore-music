@@ -44,7 +44,7 @@ class SettingsDialog(QDialog):
                      ("grp_window", ("on_top", "media_keys", "smtc", "tray", "close_to_tray", "notify"))],
         "playlist": [("grp_search", ("search_path", "search_clear_on_play")),
                      ("tab_playlist", ("follow_playing", "skip_dups", "confirm_clear"))],
-        "playback": [("grp_look", ("waveform", "time_remaining", "lyrics"))],
+        "playback": [("grp_look", ("waveform", "time_remaining", "lyrics", "meters"))],
     }
 
     def __init__(self, cfg: dict, parent=None):
@@ -122,6 +122,25 @@ class SettingsDialog(QDialog):
         f.addRow("", _hint(t("prev_hint")))
         c.addWidget(box)
         self._groups(c, "playback")
+        box = QGroupBox(t("mini"))
+        f = QFormLayout(box)
+        self.mini_look = QComboBox()
+        for key in ("card", "strip"):
+            self.mini_look.addItem(t("mini_" + key), key)
+        self.mini_look.setCurrentIndex(max(0, self.mini_look.findData(cfg.get("mini_style", "card"))))
+        f.addRow(t("mini_look"), self.mini_look)
+        self.mini_op = QSpinBox()
+        self.mini_op.setRange(30, 100)
+        self.mini_op.setSingleStep(5)
+        self.mini_op.setSuffix(" %")
+        self.mini_op.setValue(int(cfg.get("mini_opacity", 85)))
+        f.addRow(t("mini_opacity"), self.mini_op)
+        for key in ("mini_hover_opaque", "mini_on_top"):
+            cb = QCheckBox(t("opt_" + key))
+            cb.setChecked(bool(cfg.get(key, True)))
+            self.checks[key] = cb
+            f.addRow("", cb)
+        c.addWidget(box)
         c.addStretch(1)
         lay.addWidget(_buttons(self))
 
@@ -150,6 +169,8 @@ class SettingsDialog(QDialog):
         for k, cb in self.checks.items():
             self.cfg[k] = cb.isChecked()
         self.cfg["row_size"] = self.rows.currentData()
+        self.cfg["mini_style"] = self.mini_look.currentData()
+        self.cfg["mini_opacity"] = int(self.mini_op.value())
         self.cfg["hidden_cols"] = [k for k, cb in self.cols.items() if not cb.isChecked()]
         for k, sp in self.spins.items():
             self.cfg[k] = int(sp.value())
@@ -461,7 +482,7 @@ KEYS = [
     ("T", "k_ontop"), ("Ctrl + F", "k_find"), ("Ctrl + J", "k_jump"), ("Ctrl + Shift + E", "k_stop_after"), ("Del", "k_delete"),
     ("Ctrl + O", "k_open"), ("Ctrl + Shift + O", "k_open_folder"), ("Ctrl + U", "k_url"),
     ("Ctrl + N / W / Tab", "k_tabs"), ("Ctrl + Q / Shift + Q", "k_queue"), ("Ctrl + D", "k_fav"),
-    ("Ctrl + B / H", "k_library"), ("F2", "k_tags"), ("L", "k_lyrics"), ("Ctrl + L", "k_load_pl"),
+    ("Ctrl + B / H", "k_library"), ("F2", "k_tags"), ("L", "k_lyrics"), ("V", "k_levels"), ("Ctrl + L", "k_load_pl"),
     ("Ctrl + S", "k_save_pl"), ("Ctrl + ,", "k_settings"), ("⏮ ⏯ ⏭ ⏹", "k_media"), ("F1", "k_keys"),
 ]
 

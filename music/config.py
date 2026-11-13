@@ -54,7 +54,12 @@ DEFAULTS = {
     "time_remaining": False,
     "waveform":      True,
     "lyrics":        True,          # look for lyrics (.lrc / .txt next to the track, or in its tags)
-    "lyrics_show":   True,          # the lyrics panel under the cover          # the seek bar shows the waveform of the track        # the right time label shows −remaining
+    "lyrics_show":   True,
+    "meters":        True,          # channel level bars under the cover (V = the room view)
+    "mini_style":    "card",        # the mini player: card | strip
+    "mini_opacity":  85,            # %, of its background
+    "mini_hover_opaque": True,      # fully opaque under the mouse
+    "mini_on_top":   True,          # the lyrics panel under the cover          # the seek bar shows the waveform of the track        # the right time label shows −remaining
     # window
     "media_keys":    True,          # global ⏮ ⏯ ⏭ keys of the keyboard
     "check_updates": True,

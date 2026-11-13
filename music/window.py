@@ -6,9 +6,10 @@ import queue
 import threading
 import time
 
-from PySide6.QtCore import QByteArray, QObject, QPoint, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QActionGroup, QColor, QFont, QKeySequence, QShortcut
-from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
+from PySide6.QtCore import QByteArray, QObject, QPoint, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import (QActionGroup, QColor, QFont, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen,
+                           QPixmap, QShortcut)
+from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
                                QMainWindow, QTabBar,
                                QMenu, QMessageBox, QSlider, QSplitter, QSystemTrayIcon, QTreeWidgetItem, QVBoxLayout,
                                QWidget)
@@ -20,7 +21,8 @@ from .i18n import t
 from .playlist import Playlist, Track, expand, fill_tags, is_url, write_m3u
 from .waveform import Waveforms, key_of
 from . import lyrics as lyrics_mod
-from .widgets import ClickLabel, CoverView, LyricsView, PlaylistView, SeekBar, Toast, WaveSeekBar, ctl_button, elide, fmt_time
+from .widgets import (ChannelMeters, ClickLabel, CoverView, LevelState, LyricsView, PlaylistView, RoomMeters,
+                      Toast, WaveSeekBar, ctl_button, elide, fmt_time)
 
 COL_N, COL_TITLE, COL_ARTIST, COL_ALBUM, COL_LEN, COL_FAV = range(6)
 NCOLS = 6
@@ -78,57 +80,210 @@ class TagReader:
 
 
 class MiniWindow(QWidget):
-    """Small always-on-top player: cover, title, ⏮ ⏯ ⏭, seek bar. Drag it anywhere; double-click = big window."""
+    """The mini player: a translucent widget over the windows — the blurred cover as its background, the cover,
+    title, waveform, ⏮ ⏯ ⏭, shuffle / repeat, volume. Two looks: a card (cfg mini_style = "card") or a strip
+    ("strip"). Drag it anywhere; the wheel = volume; double-click or Esc = the big window."""
+    RADIUS = 16
 
     def __init__(self, win: "MainWindow"):
-        super().__init__(None, Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        flags = Qt.Window | Qt.FramelessWindowHint
+        if win.cfg.get("mini_on_top", True):
+            flags |= Qt.WindowStaysOnTopHint
+        super().__init__(None, flags)
         self.win = win
+        self.strip = win.cfg.get("mini_style", "card") == "strip"
         self.setWindowTitle(APP_TITLE)
         self.setWindowIcon(style.app_icon())
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.resize(440, 104)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        box = QWidget()
-        box.setObjectName("mini")
-        outer.addWidget(box)
-        lay = QHBoxLayout(box)
-        lay.setContentsMargins(10, 10, 10, 8)
-        lay.setSpacing(10)
-        self.cover = CoverView(radius=0.08)
-        self.cover.setFixedSize(84, 84)
-        lay.addWidget(self.cover)
-        col = QVBoxLayout()
-        col.setSpacing(2)
-        self.title = QLabel()
-        self.title.setStyleSheet("font-weight: 600; font-size: 10.5pt;")
-        self.artist = QLabel()
-        self.artist.setObjectName("album")
-        col.addWidget(self.title)
-        col.addWidget(self.artist)
-        row = QHBoxLayout()
-        row.setSpacing(2)
-        self.b_prev = ctl_button("fa6s.backward-step", t("prev"), 16, win.prev)
-        self.b_play = ctl_button("fa6s.play", t("play"), 18, win.toggle_pause)
-        self.b_next = ctl_button("fa6s.forward-step", t("next"), 16, win.next)
-        self.time = QLabel("0:00")
-        self.time.setObjectName("hint")
-        for w in (self.b_prev, self.b_play, self.b_next):
-            row.addWidget(w)
-        row.addStretch(1)
-        row.addWidget(self.time)
-        row.addWidget(ctl_button("fa6s.up-right-and-down-left-from-center", t("mini_back") + " (Ctrl+M)", 14,
-                                 win.toggle_mini))
-        col.addLayout(row)
-        self.seek = SeekBar(thin=True)
-        self.seek.seek.connect(win.engine.seek)
-        col.addWidget(self.seek)
-        lay.addLayout(col, 1)
+        self.setMouseTracking(True)
+        self._bg: QPixmap | None = None
+        self._bg_src: QPixmap | None = None
+        self._hover = False
         self._drag = None
+        self._vol_until = 0.0
 
+        white = "background: transparent; color: #ffffff;"
+        dim = "background: transparent; color: rgba(255,255,255,175); font-size: 8.5pt;"
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 12, 12, 10) if not self.strip else lay.setContentsMargins(12, 10, 10, 8)
+        lay.setSpacing(14 if not self.strip else 12)
+        self.cover = CoverView(radius=0.1)
+        side = 64 if self.strip else 112
+        self.cover.setFixedSize(side, side)
+        self.cover.clicked.connect(win.toggle_mini)
+        self.cover.setToolTip(t("mini_back") + " (Esc)")
+        self.cover.setCursor(Qt.PointingHandCursor)
+        lay.addWidget(self.cover, 0, Qt.AlignTop if not self.strip else Qt.AlignVCenter)
+
+        self.title = QLabel()
+        self.title.setStyleSheet(white + "font-weight: 700; font-size: 10.5pt;")
+        self.artist = QLabel()
+        self.artist.setStyleSheet(dim)
+        self.time = QLabel("0:00")
+        self.time.setStyleSheet(dim)
+        self.seek = WaveSeekBar()
+        self.seek.setFixedHeight(32 if self.strip else 40)
+        self.seek.seek.connect(win.engine.seek)
+
+        def btn(icon, tip, size, slot):
+            b = ctl_button(icon, tip, size, slot)
+            b.setStyleSheet("QToolButton { padding: 4px; }")
+            return b
+        self.b_shuffle = btn("mdi6.shuffle-variant", t("shuffle") + " (S)", 15, win.toggle_shuffle)
+        self.b_prev = btn("fa6s.backward-step", t("prev"), 15, win.prev)
+        self.b_play = btn("fa6s.play", t("play") + " (Space)", 19, win.toggle_pause)
+        self.b_next = btn("fa6s.forward-step", t("next"), 15, win.next)
+        self.b_repeat = btn("mdi6.repeat", t("repeat") + " (R)", 15, win.cycle_repeat)
+        self.b_mute = btn("fa6s.volume-high", t("mute") + " (M) · " + t("mini_wheel"), 13, win.toggle_mute)
+        self.b_pin = btn("fa6s.thumbtack", t("mini_pin"), 12, self.toggle_pin)
+        self.b_look = btn("fa6s.table-columns" if not self.strip else "fa6s.square", t("mini_look"), 12,
+                          win.switch_mini_look)
+        self.b_back = btn("fa6s.up-right-and-down-left-from-center", t("mini_back") + " (Ctrl+M)", 12,
+                          win.toggle_mini)
+        ctl = QHBoxLayout()
+        ctl.setSpacing(0)
+        for b in (self.b_shuffle, self.b_prev, self.b_play, self.b_next, self.b_repeat):
+            ctl.addWidget(b)
+        ctl.addStretch(1)
+        ctl.addWidget(self.time)
+        ctl.addSpacing(4)
+        for b in (self.b_mute, self.b_pin, self.b_look, self.b_back):
+            ctl.addWidget(b)
+        text = QVBoxLayout()
+        text.setSpacing(0)
+        text.addWidget(self.title)
+        text.addWidget(self.artist)
+        col = QVBoxLayout()
+        col.setSpacing(4 if not self.strip else 2)
+        if self.strip:
+            top = QHBoxLayout()
+            top.addLayout(text, 1)
+            top.addLayout(ctl)
+            col.addLayout(top)
+            col.addWidget(self.seek)
+            self.resize(640, 88)
+            self._text_w = 230
+        else:
+            col.addLayout(text)
+            col.addStretch(1)
+            col.addWidget(self.seek)
+            col.addLayout(ctl)
+            self.resize(450, 138)
+            self._text_w = 290
+        lay.addLayout(col, 1)
+        self.sync_pin()
+
+    # ── look ─────────────────────────────────────────────────
+    def set_cover(self, data: bytes | None):
+        self.cover.set_image(data or None)
+        self._bg_src = self.cover.src
+        self._bg = None
+        self.update()
+
+    def opacity(self) -> float:
+        if self._hover and self.win.cfg.get("mini_hover_opaque", True):
+            return 1.0
+        return max(0.3, min(1.0, int(self.win.cfg.get("mini_opacity", 85)) / 100.0))
+
+    def _background(self) -> QPixmap:
+        """The cover, blurred (scaled down to 10 px and back) and darkened; the ArtCore gradient without one."""
+        if self._bg is not None and self._bg.size() == self.size():
+            return self._bg
+        pm = QPixmap(self.size())
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        if self._bg_src is not None:
+            small = self._bg_src.scaled(10, 10, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            side = max(self.width(), self.height())
+            big = small.scaled(side, side, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            p.drawPixmap((self.width() - side) // 2, (self.height() - side) // 2, big)
+            p.fillRect(pm.rect(), QColor(10, 12, 18, 150))
+        else:
+            g = QLinearGradient(0, 0, self.width(), self.height())
+            g.setColorAt(0, QColor(13, 110, 253, 120))
+            g.setColorAt(1, QColor(111, 66, 193, 150))
+            p.fillRect(pm.rect(), QColor(style.PANEL))
+            p.fillRect(pm.rect(), g)
+            p.fillRect(pm.rect(), QColor(10, 12, 18, 90))
+        p.end()
+        self._bg = pm
+        return pm
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        path = QPainterPath()
+        path.addRoundedRect(r, self.RADIUS, self.RADIUS)
+        p.setClipPath(path)
+        p.setOpacity(self.opacity())
+        p.drawPixmap(0, 0, self._background())
+        p.setOpacity(1.0)
+        p.setClipping(False)
+        p.setPen(QPen(QColor(255, 255, 255, 46), 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(r, self.RADIUS, self.RADIUS)
+        p.end()
+
+    def resizeEvent(self, e):
+        self._bg = None
+        super().resizeEvent(e)
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+
+    # ── state ────────────────────────────────────────────────
+    def set_text(self, title: str, artist: str):
+        elide(self.title, title, self._text_w)
+        elide(self.artist, artist, self._text_w)
+
+    def set_time(self, text: str):
+        if time.monotonic() < self._vol_until:
+            return
+        self.time.setText(text)
+
+    def show_volume(self, v: int, muted: bool):
+        self._vol_until = time.monotonic() + 1.2
+        self.time.setText(t("muted") if muted else f"{v}%")
+
+    def set_mode_buttons(self, shuffle: bool, repeat: str):
+        self.b_shuffle.setObjectName("on" if shuffle else "ctl")
+        self.b_repeat.setObjectName("ctl" if repeat == "off" else "on")
+        self.b_repeat.setIcon(style.icon({"off": "mdi6.repeat-off", "all": "mdi6.repeat",
+                                          "one": "mdi6.repeat-once"}[repeat], "#ffffff"))
+        for b in (self.b_shuffle, self.b_repeat):
+            b.style().unpolish(b)
+            b.style().polish(b)
+
+    def toggle_pin(self):
+        on = not self.win.cfg.get("mini_on_top", True)
+        self.win.cfg["mini_on_top"] = on
+        vis = self.isVisible()
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, on)
+        if vis:
+            self.show()
+        self.sync_pin()
+        self.win.toast.show_text(t("on_top_on") if on else t("on_top_off"), 1000)
+
+    def sync_pin(self):
+        on = bool(self.win.cfg.get("mini_on_top", True))
+        self.b_pin.setObjectName("on" if on else "ctl")
+        self.b_pin.setToolTip(t("mini_pin") + (" ✓" if on else ""))
+        self.b_pin.style().unpolish(self.b_pin)
+        self.b_pin.style().polish(self.b_pin)
+
+    # ── mouse / keys ─────────────────────────────────────────
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
             self._drag = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        elif e.button() == Qt.RightButton:
+            self.win.mini_menu(e.globalPosition().toPoint())
 
     def mouseMoveEvent(self, e):
         if self._drag is not None and e.buttons() & Qt.LeftButton:
@@ -140,17 +295,80 @@ class MiniWindow(QWidget):
     def mouseDoubleClickEvent(self, e):
         self.win.toggle_mini()
 
+    def wheelEvent(self, e):
+        d = e.angleDelta().y()
+        if d:
+            step = int(self.win.cfg.get("volume_step", 5)) * (1 if d > 0 else -1)
+            self.win.vol.setValue(self.win.vol.value() + step)
+            self.show_volume(self.win.vol.value(), bool(self.win.cfg.get("muted")))
+
     def keyPressEvent(self, e):
-        if e.key() == Qt.Key_Escape:
+        k = e.key()
+        if k == Qt.Key_Escape:
             self.win.toggle_mini()
-        elif e.key() == Qt.Key_Space:
+        elif k == Qt.Key_Space:
             self.win.toggle_pause()
+        elif k in (Qt.Key_Left, Qt.Key_Right):
+            self.win.engine.seek_rel(int(self.win.cfg.get("seek_step", 5)) * (1 if k == Qt.Key_Right else -1))
+        elif k in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Plus, Qt.Key_Minus):
+            step = int(self.win.cfg.get("volume_step", 5)) * (1 if k in (Qt.Key_Up, Qt.Key_Plus) else -1)
+            self.win.vol.setValue(self.win.vol.value() + step)
+            self.show_volume(self.win.vol.value(), bool(self.win.cfg.get("muted")))
+        elif k == Qt.Key_M:
+            self.win.toggle_mute()
+            self.show_volume(self.win.vol.value(), bool(self.win.cfg.get("muted")))
+        elif k == Qt.Key_S:
+            self.win.toggle_shuffle()
+        elif k == Qt.Key_R:
+            self.win.cycle_repeat()
         else:
             super().keyPressEvent(e)
 
     def closeEvent(self, e):
         e.ignore()
         self.win.toggle_mini()
+
+
+class LevelsWindow(QDialog):
+    """The room with the channel levels (V): to see that every speaker of the 5.1 gets sound."""
+
+    def __init__(self, win: "MainWindow"):
+        super().__init__(win, Qt.Window)
+        self.win = win
+        self.setWindowTitle(t("levels") + " — " + APP_TITLE)
+        self.setWindowIcon(style.app_icon())
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 12)
+        lay.setSpacing(8)
+        self.head = QLabel()
+        self.head.setStyleSheet("font-size: 11pt; font-weight: 700;")
+        lay.addWidget(self.head)
+        labels = {"you": t("spk_you")}
+        self.room = RoomMeters(win.levels, labels)
+        lay.addWidget(self.room, 1)
+        hint = QLabel(t("levels_hint"))
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        self.resize(560, 470)
+
+    def set_head(self, text: str):
+        self.head.setText(t("levels") + (" · " + text if text else ""))
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_V:
+            self.close()
+        else:
+            super().keyPressEvent(e)
+
+    def showEvent(self, e):
+        winint.dark_title_bar(int(self.winId()))
+        super().showEvent(e)
+        self.win._meters_need()
+
+    def closeEvent(self, e):
+        super().closeEvent(e)
+        self.win._meters_need()
 
 
 class MainWindow(QMainWindow):
@@ -194,6 +412,11 @@ class MainWindow(QMainWindow):
         self.fmt_info: dict = {}
         self.update_info: dict | None = None
         self.mini: MiniWindow | None = None
+        self.levels = LevelState()               # the channel meters (under the cover and the room window)
+        self.levels_win: LevelsWindow | None = None
+        self.meter_timer = QTimer(self)
+        self.meter_timer.setInterval(33)
+        self.meter_timer.timeout.connect(self._meter_tick)
         self._hotkeys: list[int] = []
         self.thumbbar = winint.ThumbBar()
         self._thumb_icons: dict[str, int] = {}
@@ -279,6 +502,11 @@ class MainWindow(QMainWindow):
         self.b_lyrics.hide()
         row.addWidget(self.b_lyrics)
         lay.addLayout(row)
+        self.meters = ChannelMeters(self.levels)
+        self.meters.setToolTip(t("meters_tip") + " (V)")
+        self.meters.clicked.connect(self.toggle_levels)
+        self.meters.hide()
+        lay.addWidget(self.meters)
         self.t_next = QLabel()
         self.t_next.setObjectName("hint")
         self.t_next.setWordWrap(True)
@@ -318,6 +546,37 @@ class MainWindow(QMainWindow):
     def toggle_lyrics(self):
         self.cfg["lyrics_show"] = not self.cfg.get("lyrics_show", True)
         self._apply_lyrics_visible()
+
+    # ── channel levels ────────────────────────────────────────
+    def _meters_need(self):
+        """Run the 30 Hz meter timer only while a meter is on screen."""
+        playing = self.engine.cur is not None and not self.engine.stopped
+        show_bars = bool(self.cfg.get("meters", True)) and playing
+        self.meters.setVisible(show_bars)
+        room = self.levels_win is not None and self.levels_win.isVisible()
+        need = (show_bars and self.isVisible()) or room
+        if need and not self.meter_timer.isActive():
+            self.meter_timer.start()
+        elif not need and self.meter_timer.isActive():
+            self.meter_timer.stop()
+
+    def _meter_tick(self):
+        if self.levels.feed(self.engine.levels(), time.monotonic()) or not self.levels.ch:
+            if self.meters.isVisible():
+                self.meters.update()
+            if self.levels_win is not None and self.levels_win.isVisible():
+                self.levels_win.room.update()
+
+    def toggle_levels(self):
+        if self.levels_win is None:
+            self.levels_win = LevelsWindow(self)
+        if self.levels_win.isVisible():
+            self.levels_win.close()
+            return
+        self.levels_win.set_head(self.t_format.text() if self.t_format.isVisible() else "")
+        self.levels_win.show()
+        self.levels_win.raise_()
+        self.levels_win.activateWindow()
 
     def _build_list(self) -> QWidget:
         w = QWidget()
@@ -512,6 +771,7 @@ class MainWindow(QMainWindow):
         sc("Ctrl+D", self.toggle_fav_selected)
         sc("F2", not_typing(self.edit_tags_selected))
         sc("L", self.toggle_lyrics)
+        sc("V", self.toggle_levels)
         sc("Ctrl+Q", lambda: self.queue_selected(front=True))
         sc("Ctrl+Shift+Q", lambda: self.queue_selected(front=False))
         sc("Ctrl+H", lambda: self.open_library_tab("history"))
@@ -1225,6 +1485,7 @@ class MainWindow(QMainWindow):
         self.engine.stop()
         self._refresh_item(self.engine.cur.uid) if self.engine.cur else None
         self._thumb_update()
+        self._meters_need()
 
     def next(self):
         nxt = self.engine.next_track(self.engine.cur, auto=False)
@@ -1260,6 +1521,8 @@ class MainWindow(QMainWindow):
             "fa6s.volume-low" if v < 40 else "fa6s.volume-high"
         self.b_mute.setIcon(style.icon(name, "#ffffff"))
         self.l_vol.setText(f"{v}%")
+        if self.mini is not None:
+            self.mini.b_mute.setIcon(style.icon(name, "#ffffff"))
 
     def toggle_shuffle(self):
         on = not self.engine.pl.shuffle
@@ -1291,6 +1554,8 @@ class MainWindow(QMainWindow):
         for b in (self.b_shuffle, self.b_repeat):
             b.style().unpolish(b)
             b.style().polish(b)
+        if self.mini is not None:
+            self.mini.set_mode_buttons(self.engine.pl.shuffle, rep)
 
     # ── engine signals ────────────────────────────────────────
     def _on_track(self, tr: Track | None):
@@ -1318,24 +1583,33 @@ class MainWindow(QMainWindow):
         self._show_track(tr)
         self._dirty = True
 
+    def _mini_wave(self):
+        if self.mini is not None:
+            self.mini.seek.set_wave_enabled(bool(self.cfg.get("waveform", True)))
+            self.mini.seek.set_peaks(self.seekbar.peaks or None, self.seekbar.loading)
+
     def _load_wave(self, tr: Track | None):
         if tr is None or tr.is_stream or not self.cfg.get("waveform", True):
             self._wave_key = ""
             self.seekbar.set_peaks(None)
+            self._mini_wave()
             return
         key = key_of(tr)
         if key == self._wave_key and self.seekbar.peaks:
             return
         self._wave_key = key
         self.seekbar.set_peaks(None, loading=True)
+        self._mini_wave()
         self.waves.request(tr)
         self.waves.prefetch(self.engine.next_track(tr, auto=True))         # ready when it starts
 
     def _on_wave(self, key: str, peaks: bytes):
         if key == self._wave_key:
             self.seekbar.set_peaks(peaks)
+            self._mini_wave()
 
     def _show_track(self, tr: Track | None):
+        self._meters_need()
         if tr is None:
             self._load_wave(None)
             self._load_lyrics(None)
@@ -1398,8 +1672,7 @@ class MainWindow(QMainWindow):
         self._render_format()
         self._set_mini(tr)
         if self.mini is not None and icy:
-            elide(self.mini.title, icy, 300)
-            elide(self.mini.artist, tr.display_title(), 300)
+            self.mini.set_text(icy, tr.display_title())
         self.l_dur.setText(t("live"))
         self._update_next_label()
         if self.smtc is not None:
@@ -1437,7 +1710,7 @@ class MainWindow(QMainWindow):
             self.l_dur.setText(t("live"))
             if self.mini is not None and self.mini.isVisible():
                 self.mini.seek.set_state(0, 0)
-                self.mini.time.setText(f"{fmt_time(pos)} · {t('live')}")
+                self.mini.set_time(f"{fmt_time(pos)} · {t('live')}")
             return
         if cur is not None and dur and not cur.duration():          # DTS / TrueHD: mutagen does not know the length
             cur.length = cur.start + dur
@@ -1453,7 +1726,7 @@ class MainWindow(QMainWindow):
                            else fmt_time(dur))
         if self.mini is not None and self.mini.isVisible():
             self.mini.seek.set_state(pos, dur)
-            self.mini.time.setText(f"{fmt_time(pos)} / {fmt_time(dur)}")
+            self.mini.set_time(f"{fmt_time(pos)} / {fmt_time(dur)}")
 
     def _on_paused(self, paused: bool):
         icon = "fa6s.play" if paused else "fa6s.pause"
@@ -1461,6 +1734,7 @@ class MainWindow(QMainWindow):
         self.b_play.setToolTip((t("play") if paused else t("pause")) + " (Space)")
         if self.mini is not None:
             self.mini.b_play.setIcon(style.icon(icon, "#ffffff"))
+        self._meters_need()
         if self.engine.cur is not None:
             self._refresh_item(self.engine.cur.uid)
         self._thumb_update()
@@ -1542,6 +1816,8 @@ class MainWindow(QMainWindow):
         tip.append("ReplayGain: " + t("rg_" + rg))
         self.t_format.setToolTip("\n".join(tip))
         self.t_format.show()
+        if self.levels_win is not None:
+            self.levels_win.set_head(text)
 
     def _on_finished(self):
         self._smtc_status()
@@ -1552,6 +1828,7 @@ class MainWindow(QMainWindow):
             self._refresh_item(self.engine.cur.uid)
         self._update_next_label()
         self._thumb_update()
+        self._meters_need()
 
     # ── stop after, sleep timer, time label ───────────────────
     def set_stop_after(self, uid: int | None):
@@ -1748,6 +2025,7 @@ class MainWindow(QMainWindow):
         a.setChecked(bool(self.cfg.get("upmix")))
         a.triggered.connect(self.toggle_upmix)
         snd.addAction(style.icon("fa6s.volume-high"), t("speaker_test") + "\tCtrl+T", self.speaker_test)
+        snd.addAction(style.icon("fa6s.chart-simple"), t("levels") + "\tV", self.toggle_levels)
         snd.addAction(style.icon("fa6s.gear"), t("sound_more") + "\tCtrl+P", self.sound_dialog)
         rg = m.addMenu(style.icon("fa6s.scale-balanced"), "ReplayGain")
         g2 = QActionGroup(rg)
@@ -1824,6 +2102,7 @@ class MainWindow(QMainWindow):
             self._setup_smtc()
             self.seekbar.set_wave_enabled(bool(self.cfg.get("waveform", True)))
             self._load_lyrics(self.engine.cur)
+            self._meters_need()
             self._wave_key = ""
             self._load_wave(self.engine.cur)
             self._on_pos(*self._last_pos)
@@ -1849,6 +2128,10 @@ class MainWindow(QMainWindow):
 
     # ── mini player ───────────────────────────────────────────
     def toggle_mini(self):
+        if self.mini is not None and not self.mini.isVisible() and \
+                self.mini.strip != (self.cfg.get("mini_style", "card") == "strip"):   # the look was changed in settings
+            self.mini.deleteLater()
+            self.mini = None
         if self.mini is None:
             self.mini = MiniWindow(self)
         if self.mini.isVisible():
@@ -1857,33 +2140,97 @@ class MainWindow(QMainWindow):
             self.show()
             self.raise_()
             self.activateWindow()
+            self._meters_need()
             return
-        self._set_mini(self.engine.cur)
-        self.mini.b_play.setIcon(style.icon("fa6s.play" if self.engine.paused else "fa6s.pause", "#ffffff"))
-        pos, dur = self._last_pos
-        self.mini.seek.set_state(pos, dur)
-        self.mini.time.setText(f"{fmt_time(pos)} / {fmt_time(dur)}")
+        self._fill_mini()
         geo = self.cfg.get("mini_geometry") or []
-        if len(geo) >= 2:
+        scr = self.screen().availableGeometry()
+        if len(geo) >= 2 and scr.adjusted(-40, -40, 40, 40).contains(QPoint(int(geo[0]) + 40, int(geo[1]) + 20)):
             self.mini.move(int(geo[0]), int(geo[1]))
         else:
-            scr = self.screen().availableGeometry()
             self.mini.move(scr.right() - self.mini.width() - 24, scr.bottom() - self.mini.height() - 24)
         self.hide()
         self.mini.show()
-        winint.dark_title_bar(int(self.mini.winId()))
+        self._meters_need()
+
+    def _fill_mini(self):
+        """Everything the mini player shows, from the big window's state."""
+        m = self.mini
+        self._set_mini(self.engine.cur)
+        m.b_play.setIcon(style.icon("fa6s.play" if self.engine.paused else "fa6s.pause", "#ffffff"))
+        m.set_mode_buttons(self.engine.pl.shuffle, self.engine.pl.repeat)
+        self._sync_mute_icon()
+        self._mini_wave()
+        self._on_pos(*self._last_pos)
+        cur = self.engine.cur
+        if cur is not None and cur.is_stream and self.engine.icy:
+            m.set_text(self.engine.icy, cur.display_title())
+
+    def switch_mini_look(self):
+        """Card ⇄ strip: the mini player is built again in the other look, at the same place."""
+        self.cfg["mini_style"] = "strip" if self.cfg.get("mini_style", "card") == "card" else "card"
+        old = self.mini
+        if old is None:
+            return
+        vis = old.isVisible()
+        pos = old.pos()
+        h = old.height()
+        old.hide()
+        old.deleteLater()
+        self.mini = MiniWindow(self)
+        self._fill_mini()
+        self.mini.move(pos.x(), pos.y() + h - self.mini.height())      # keep the bottom edge where it was
+        if vis:
+            self.mini.show()
+
+    def set_mini_opacity(self, v: int):
+        self.cfg["mini_opacity"] = int(v)
+        if self.mini is not None:
+            self.mini.update()
+
+    def mini_menu(self, at: QPoint):
+        m = QMenu(self.mini)
+        strip = self.cfg.get("mini_style", "card") == "strip"
+        grp = QActionGroup(m)
+        for key in ("card", "strip"):
+            a = m.addAction(t("mini_" + key))
+            a.setCheckable(True)
+            a.setChecked((key == "strip") == strip)
+            a.setActionGroup(grp)
+            a.triggered.connect(lambda _=False, k=key: self.switch_mini_look()
+                                if self.cfg.get("mini_style", "card") != k else None)
+        m.addSeparator()
+        op = m.addMenu(t("mini_opacity"))
+        g2 = QActionGroup(op)
+        cur = int(self.cfg.get("mini_opacity", 85))
+        for v in (100, 90, 85, 75, 60, 50):
+            a = op.addAction(f"{v}%")
+            a.setCheckable(True)
+            a.setChecked(v == cur)
+            a.setActionGroup(g2)
+            a.triggered.connect(lambda _=False, x=v: self.set_mini_opacity(x))
+        a = m.addAction(t("mini_hover_opaque"))
+        a.setCheckable(True)
+        a.setChecked(bool(self.cfg.get("mini_hover_opaque", True)))
+        a.triggered.connect(lambda on: self.cfg.__setitem__("mini_hover_opaque", bool(on)))
+        a = m.addAction(t("mini_pin"))
+        a.setCheckable(True)
+        a.setChecked(bool(self.cfg.get("mini_on_top", True)))
+        a.triggered.connect(lambda _=False: self.mini.toggle_pin())
+        m.addSeparator()
+        m.addAction(t("levels") + "\tV", self.toggle_levels)
+        m.addAction(t("mini_back") + "\tEsc", self.toggle_mini)
+        m.exec(at)
 
     def _set_mini(self, tr: Track | None):
         if self.mini is None:
             return
         if tr is None:
-            elide(self.mini.title, APP_TITLE, 300)
-            self.mini.artist.setText("")
-            self.mini.cover.set_image(None)
+            self.mini.set_text(APP_TITLE, "")
+            self.mini.set_cover(None)
             return
-        elide(self.mini.title, tr.display_title(), 300)
-        elide(self.mini.artist, tr.artist or tr.album, 300)
-        self.mini.cover.set_image(getattr(self, "_cover_data", b"") or None)
+        self.mini.set_text(tr.display_title(), tr.artist or tr.album or (t("radio") if tr.is_stream else ""))
+        self.mini.set_cover(getattr(self, "_cover_data", b"") or None)
 
     # ── session ───────────────────────────────────────────────
     def save_session(self):
