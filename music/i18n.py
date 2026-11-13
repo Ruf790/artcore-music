@@ -187,6 +187,7 @@ STRINGS = {
     "opt_search_clear_on_play": ("Запуск найденного трека очищает поиск", "Playing a found track clears the search"),
     "opt_confirm_clear": ("Спрашивать перед очисткой плейлиста", "Ask before clearing the playlist"),
     "opt_skip_dups":  ("Не добавлять файлы, которые уже есть в плейлисте", "Don't add files already in the playlist"),
+    "opt_waveform":   ("Волна трека вместо полосы перемотки (как на SoundCloud)", "Track waveform instead of the seek bar (SoundCloud style)"),
     "opt_time_remaining": ("Справа показывать, сколько осталось (−1:23)", "Show the time left on the right (−1:23)"),
     "row_size":       ("Высота строк", "Row height"),
     "row_compact":    ("Компактно", "Compact"),

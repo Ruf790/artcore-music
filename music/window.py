@@ -16,7 +16,8 @@ from . import APP_TITLE, AUDIO_EXT, CUE_EXT, PLAYLIST_EXT, VERSION, audio, confi
 from .engine import Engine
 from .i18n import t
 from .playlist import Playlist, Track, expand, fill_tags, write_m3u
-from .widgets import ClickLabel, CoverView, PlaylistView, SeekBar, Toast, ctl_button, elide, fmt_time
+from .waveform import Waveforms, key_of
+from .widgets import ClickLabel, CoverView, PlaylistView, SeekBar, Toast, WaveSeekBar, ctl_button, elide, fmt_time
 
 COL_N, COL_TITLE, COL_ARTIST, COL_ALBUM, COL_LEN = range(5)
 COL_KEYS = {"n": COL_N, "artist": COL_ARTIST, "album": COL_ALBUM, "len": COL_LEN}
@@ -173,6 +174,9 @@ class MainWindow(QMainWindow):
         self.bridge.tagged.connect(self._on_tagged)
         self.bridge.update.connect(self._on_update_result)
         self.tags = TagReader(self.bridge)
+        self.waves = Waveforms(mpv_module)
+        self.waves.ready.connect(self._on_wave)
+        self._wave_key = ""
         self.items: dict[int, QTreeWidgetItem] = {}
         self.cur_tags = None
         self.fmt_info: dict = {}
@@ -351,7 +355,8 @@ class MainWindow(QMainWindow):
         self.l_dur.clicked.connect(self.toggle_time_remaining)
         self.l_dur.setMinimumWidth(48)
         self.l_dur.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.seekbar = SeekBar()
+        self.seekbar = WaveSeekBar()
+        self.seekbar.set_wave_enabled(bool(self.cfg.get("waveform", True)))
         self.seekbar.seek.connect(self.engine.seek)
         seek.addWidget(self.l_pos)
         seek.addWidget(self.seekbar, 1)
@@ -931,11 +936,30 @@ class MainWindow(QMainWindow):
                 self.view.scrollToItem(it)
             if prev_uid != tr.uid:
                 self._notify(tr)
+                self._load_wave(tr)
         self._show_track(tr)
         self._dirty = True
 
+    def _load_wave(self, tr: Track | None):
+        if tr is None or not self.cfg.get("waveform", True):
+            self._wave_key = ""
+            self.seekbar.set_peaks(None)
+            return
+        key = key_of(tr)
+        if key == self._wave_key and self.seekbar.peaks:
+            return
+        self._wave_key = key
+        self.seekbar.set_peaks(None, loading=True)
+        self.waves.request(tr)
+        self.waves.prefetch(self.pl.next_after(tr, auto=True))         # ready when it starts
+
+    def _on_wave(self, key: str, peaks: bytes):
+        if key == self._wave_key:
+            self.seekbar.set_peaks(peaks)
+
     def _show_track(self, tr: Track | None):
         if tr is None:
+            self._load_wave(None)
             self.t_title.setText(APP_TITLE)
             self.t_artist.setText(t("idle_sub"))
             self.t_album.setText("")
@@ -1298,6 +1322,9 @@ class MainWindow(QMainWindow):
             config.save(self.cfg)
             self._apply_view_options()
             self._setup_tray()
+            self.seekbar.set_wave_enabled(bool(self.cfg.get("waveform", True)))
+            self._wave_key = ""
+            self._load_wave(self.engine.cur)
             self._on_pos(*self._last_pos)
             if keys != self.cfg.get("media_keys"):
                 self._media_keys(bool(self.cfg.get("media_keys")))
@@ -1531,6 +1558,7 @@ class MainWindow(QMainWindow):
         config.save(self.cfg)
         self.save_timer.stop()
         self.tags.stop()
+        self.waves.stop()
         winint.unregister_media_keys(int(self.winId()), self._hotkeys)
         self.engine.shutdown()
         self.sleep_timer.stop()

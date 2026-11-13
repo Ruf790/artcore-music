@@ -44,7 +44,7 @@ class SettingsDialog(QDialog):
                      ("grp_window", ("on_top", "media_keys", "tray", "close_to_tray", "notify"))],
         "playlist": [("grp_search", ("search_path", "search_clear_on_play")),
                      ("tab_playlist", ("follow_playing", "skip_dups", "confirm_clear"))],
-        "playback": [("grp_look", ("time_remaining",))],
+        "playback": [("grp_look", ("waveform", "time_remaining"))],
     }
 
     def __init__(self, cfg: dict, parent=None):

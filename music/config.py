@@ -50,7 +50,8 @@ DEFAULTS = {
     "seek_step_big": 30,            # Shift + ← / →
     "volume_step":   5,
     "prev_restart":  3,             # ⏮ after this many seconds restarts the track (0 = always the previous one)
-    "time_remaining": False,        # the right time label shows −remaining
+    "time_remaining": False,
+    "waveform":      True,          # the seek bar shows the waveform of the track        # the right time label shows −remaining
     # window
     "media_keys":    True,          # global ⏮ ⏯ ⏭ keys of the keyboard
     "check_updates": True,

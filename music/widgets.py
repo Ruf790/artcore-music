@@ -101,6 +101,90 @@ class SeekBar(QWidget):
         self.update()
 
 
+class WaveSeekBar(SeekBar):
+    """The seek bar as a waveform: bars above a base line, their dim reflection below; played = bright,
+    hover = a lighter preview up to the mouse, a thin line at the position. Without a waveform (still being
+    read, a stream) it is the plain bar."""
+    HEIGHT = 58
+    BAR, GAP = 2, 1
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.peaks: bytes = b""
+        self.loading = False
+        self.enabled_wave = True
+        self._bars: list[float] = []
+        self._bars_w = -1
+        self.setFixedHeight(self.HEIGHT)
+
+    def set_wave_enabled(self, on: bool):
+        self.enabled_wave = on
+        self.update()
+
+    def set_peaks(self, peaks: bytes | None, loading: bool = False):
+        self.peaks = peaks or b""
+        self.loading = loading and not self.peaks
+        self._bars_w = -1
+        self.update()
+
+    def _bar_values(self, n: int) -> list[float]:
+        if self._bars_w == n:
+            return self._bars
+        src = self.peaks
+        out = []
+        for i in range(n):
+            a = int(i * len(src) / n)
+            b = max(a + 1, int((i + 1) * len(src) / n))
+            out.append(max(src[a:b]) / 255.0)
+        self._bars, self._bars_w = out, n
+        return out
+
+    def paintEvent(self, e):
+        if not self.enabled_wave or not (self.peaks or self.loading):
+            return super().paintEvent(e)
+        p = QPainter(self)
+        w, h = self.width(), self.height()
+        base = round(h * 0.68)
+        step = self.BAR + self.GAP
+        n = max(1, w // step)
+        frac = self.pos_ / self.dur if self.dur else 0.0
+        px = w * frac
+        hx = self.hover if self.hover >= 0 and not self.drag else -1
+        played, rest = QColor("#ffffff"), QColor(255, 255, 255, 105)
+        hovered = QColor(255, 255, 255, 175)
+        r_played, r_rest = QColor(255, 255, 255, 80), QColor(255, 255, 255, 34)
+        p.setPen(Qt.NoPen)
+        if self.loading:                                   # a quiet flat line until the waveform is read
+            p.setBrush(QColor(255, 255, 255, 40))
+            p.drawRect(QRectF(0, base - 2, w, 2))
+            p.setBrush(QColor(255, 255, 255, 140))
+            p.drawRect(QRectF(0, base - 2, px, 2))
+        else:
+            vals = self._bar_values(n)
+            for i, v in enumerate(vals):
+                x = i * step
+                mid = x + self.BAR / 2
+                up = max(1.0, v * (base - 3))
+                down = max(1.0, v * (h - base - 2) * 0.85)
+                if mid <= px:
+                    top, ref = played, r_played
+                elif hx >= 0 and mid <= hx:
+                    top, ref = hovered, r_played
+                else:
+                    top, ref = rest, r_rest
+                p.setBrush(top)
+                p.drawRect(QRectF(x, base - up, self.BAR, up))
+                p.setBrush(ref)
+                p.drawRect(QRectF(x, base + 1, self.BAR, down))
+        if self.dur:
+            p.setBrush(QColor("#ffffff"))
+            p.drawRect(QRectF(min(px, w - 1), 0, 1, h))
+            if hx >= 0:
+                p.setBrush(QColor(255, 255, 255, 120))
+                p.drawRect(QRectF(hx, 0, 1, h))
+        p.end()
+
+
 def placeholder_cover(size: int) -> QPixmap:
     pm = QPixmap(size, size)
     pm.fill(Qt.transparent)

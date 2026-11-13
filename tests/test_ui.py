@@ -192,3 +192,21 @@ def test_settings_dialog_tabs(qapp, data_dir):
     d.accept()
     assert cfg["row_size"] == "compact" and cfg["hidden_cols"] == ["artist"]
     assert cfg["seek_step"] == 10 and cfg["tray"] is True
+
+
+def test_waveform(qapp, mpvmod, media, data_dir):
+    from music.waveform import PEAKS, Waveforms, key_of
+    w = _win(mpvmod)
+    w.open_paths([os.path.join(media, "Stereo Album")])
+    assert pump(qapp, 8, lambda: len(w.seekbar.peaks) == PEAKS)
+    first = w.engine.cur
+    w.seekbar.grab()                                              # paints without errors
+    w.next()
+    assert pump(qapp, 8, lambda: w.engine.cur is not first and len(w.seekbar.peaks) == PEAKS)
+    w.close()
+    wf = Waveforms(mpvmod)                                         # from the disk cache now: at once
+    got = []
+    wf.ready.connect(lambda k, p: got.append(k))
+    k = wf.request(first)
+    assert got == [k] and k == key_of(first)
+    wf.stop()
