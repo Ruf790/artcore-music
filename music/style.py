@@ -27,8 +27,23 @@ def _check_png() -> str:
     return path.replace("\\", "/")
 
 
+def _icon_png(name: str, color: str, file: str, px: int = 12) -> str:
+    """An icon as a PNG in %TEMP% (QSS images need a file)."""
+    import os
+    import tempfile
+    path = os.path.join(tempfile.gettempdir(), file)
+    if not os.path.isfile(path):
+        try:
+            icon(name, color).pixmap(px, px).save(path)
+        except Exception:
+            return ""
+    return path.replace("\\", "/")
+
+
 def stylesheet() -> str:
-    return QSS.replace("%CHECK%", _check_png())
+    return (QSS.replace("%CHECK%", _check_png())
+            .replace("%CLOSE%", _icon_png("fa6s.xmark", MUTED, "artcore_music_close.png"))
+            .replace("%CLOSE_HOT%", _icon_png("fa6s.xmark", "#ffffff", "artcore_music_close_hot.png")))
 
 
 _icons: dict = {}
@@ -165,6 +180,11 @@ QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; color
 QTabWidget::pane {{ border: 1px solid {BORDER}; border-radius: 10px; top: -1px; }}
 QTabBar::tab {{ background: transparent; padding: 7px 14px; color: {MUTED}; border: none; }}
 QTabBar::tab:selected {{ color: #ffffff; border-bottom: 2px solid {ACCENT}; }}
+QTabBar#plTabs::tab {{ padding: 6px 8px 6px 12px; min-width: 60px; max-width: 220px; }}
+QTabBar#plTabs::tab:hover:!selected {{ color: {TEXT}; }}
+QTabBar#plTabs::close-button {{ image: url(%CLOSE%); subcontrol-position: right; border-radius: 4px;
+                               margin-left: 4px; padding: 2px; }}
+QTabBar#plTabs::close-button:hover {{ image: url(%CLOSE_HOT%); background: rgba(255,255,255,30); }}
 QScrollBar:horizontal {{ background: transparent; height: 8px; margin: 0; }}
 QScrollBar::handle:horizontal {{ background: rgba(255,255,255,50); border-radius: 4px; min-width: 30px; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
