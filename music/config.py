@@ -14,6 +14,11 @@ DEFAULTS = {
     "single_window": True,          # files opened from Explorer go to the running player
     "on_top":        False,
     "resume":        True,          # playlist, track and position come back on the next start
+    "resume_play":   False,         # ...and keep playing (not paused)
+    "tray":          False,         # an icon in the notification area
+    "close_to_tray": False,         # ✕ hides the window to the tray
+    "notify":        False,         # a tray notification on every new track (when the window is not active)
+    "tray_hint_shown": False,
     "repeat":        "off",         # off | all | one
     "shuffle":       False,
     # sound
@@ -29,6 +34,23 @@ DEFAULTS = {
     "crossfade":     0,             # seconds, 0 = gapless
     "xfade_album":   True,          # no crossfade between tracks of the same album (keep it gapless)
     "audio_device":  "auto",
+    "audio_exclusive": False,       # WASAPI exclusive mode (bypasses the Windows mixer and its effects)
+    "samplerate":    0,             # output sample rate, 0 = as the file
+    "fade_pause":    0,             # ms of fade on pause / resume, 0 = off
+    # playlist
+    "follow_playing": True,         # scroll the list to every new track
+    "search_path":   True,          # the search also looks in folder names
+    "search_clear_on_play": False,  # playing a found track clears the search
+    "row_size":      "normal",      # compact | normal | large
+    "hidden_cols":   [],            # playlist columns switched off: n | artist | album | len
+    "confirm_clear": True,
+    "skip_dups":     True,          # files already in the playlist are not added again
+    # playback
+    "seek_step":     5,             # ← / →, seconds
+    "seek_step_big": 30,            # Shift + ← / →
+    "volume_step":   5,
+    "prev_restart":  3,             # ⏮ after this many seconds restarts the track (0 = always the previous one)
+    "time_remaining": False,        # the right time label shows −remaining
     # window
     "media_keys":    True,          # global ⏮ ⏯ ⏭ keys of the keyboard
     "check_updates": True,
@@ -102,6 +124,17 @@ def load() -> dict:
         cfg["replaygain"] = "album"
     if not isinstance(cfg.get("eq"), list) or len(cfg["eq"]) != 10:
         cfg["eq"] = [0] * 10
+    if cfg.get("row_size") not in ("compact", "normal", "large"):
+        cfg["row_size"] = "normal"
+    if not isinstance(cfg.get("hidden_cols"), list):
+        cfg["hidden_cols"] = []
+    cfg["hidden_cols"] = [c for c in cfg["hidden_cols"] if c in ("n", "artist", "album", "len")]
+    for key, lo, hi in (("seek_step", 1, 60), ("seek_step_big", 5, 600), ("volume_step", 1, 20),
+                        ("prev_restart", 0, 30), ("fade_pause", 0, 2000), ("samplerate", 0, 384000)):
+        try:
+            cfg[key] = max(lo, min(hi, int(cfg.get(key))))
+        except (TypeError, ValueError):
+            cfg[key] = DEFAULTS[key]
     return cfg
 
 

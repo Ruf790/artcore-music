@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
                                QGridLayout, QGroupBox, QHBoxLayout, QLabel, QProgressBar, QPushButton, QSlider,
-                               QSpinBox, QTextBrowser, QVBoxLayout)
+                               QSpinBox, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
 
 from . import APP_TITLE, VERSION, audio, style
 from .i18n import t
@@ -38,38 +38,120 @@ def _hint(text: str) -> QLabel:
 
 
 class SettingsDialog(QDialog):
+    """General / playlist / controls. Sound has its own dialog (Ctrl+P)."""
+    CHECKS = {
+        "general":  [("grp_start", ("resume", "resume_play", "single_window", "check_updates")),
+                     ("grp_window", ("on_top", "media_keys", "tray", "close_to_tray", "notify"))],
+        "playlist": [("grp_search", ("search_path", "search_clear_on_play")),
+                     ("tab_playlist", ("follow_playing", "skip_dups", "confirm_clear"))],
+        "playback": [("grp_look", ("time_remaining",))],
+    }
+
     def __init__(self, cfg: dict, parent=None):
         super().__init__(parent)
         self.cfg = cfg
         self.setWindowTitle(t("settings") + " — " + APP_TITLE)
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(560)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(22, 18, 22, 16)
         lay.addWidget(_head(t("settings")))
+        self.tabs = QTabWidget()
+        lay.addWidget(self.tabs, 1)
+        self.checks: dict[str, QCheckBox] = {}
+
+        # general
+        g = self._page("tab_general")
         form = QFormLayout()
-        form.setVerticalSpacing(10)
         self.lang = QComboBox()
         self.lang.addItem("Русский", "ru")
         self.lang.addItem("English", "en")
         self.lang.setCurrentIndex(0 if cfg.get("language") == "ru" else 1)
         form.addRow(t("language"), self.lang)
-        lay.addLayout(form)
-        self.checks = {}
-        for key in ("resume", "single_window", "media_keys", "on_top", "check_updates"):
-            cb = QCheckBox(t("opt_" + key))
-            cb.setChecked(bool(cfg.get(key)))
-            self.checks[key] = cb
-            lay.addWidget(cb)
-        lay.addWidget(_hint(t("lang_restart")))
+        g.addLayout(form)
+        self._groups(g, "general")
+        self.checks["resume_play"].setEnabled(self.checks["resume"].isChecked())
+        self.checks["resume"].toggled.connect(self.checks["resume_play"].setEnabled)
+        for k in ("close_to_tray", "notify"):
+            self.checks[k].setEnabled(self.checks["tray"].isChecked())
+            self.checks["tray"].toggled.connect(self.checks[k].setEnabled)
+        g.addWidget(_hint(t("lang_restart")))
         from . import config
-        lay.addWidget(_hint(t("data_in", config.data_dir())))
-        lay.addStretch(1)
+        g.addWidget(_hint(t("data_in", config.data_dir())))
+        g.addStretch(1)
+
+        # playlist
+        p = self._page("tab_playlist")
+        self._groups(p, "playlist")
+        box = QGroupBox(t("grp_look"))
+        f = QFormLayout(box)
+        self.rows = QComboBox()
+        for key in ("compact", "normal", "large"):
+            self.rows.addItem(t("row_" + key), key)
+        self.rows.setCurrentIndex(max(0, self.rows.findData(cfg.get("row_size", "normal"))))
+        f.addRow(t("row_size"), self.rows)
+        cols = QHBoxLayout()
+        self.cols: dict[str, QCheckBox] = {}
+        hidden = set(cfg.get("hidden_cols") or [])
+        for key, name in (("n", "#"), ("artist", t("col_artist")), ("album", t("col_album")), ("len", t("col_len"))):
+            cb = QCheckBox(name)
+            cb.setChecked(key not in hidden)
+            self.cols[key] = cb
+            cols.addWidget(cb)
+        cols.addStretch(1)
+        f.addRow(t("show_cols"), cols)
+        p.addWidget(box)
+        p.addStretch(1)
+
+        # controls
+        c = self._page("tab_playback")
+        box = QGroupBox(t("grp_steps"))
+        f = QFormLayout(box)
+        f.setVerticalSpacing(9)
+        self.spins: dict[str, QSpinBox] = {}
+        for key, lo, hi, suffix in (("seek_step", 1, 60, t("sec")), ("seek_step_big", 5, 600, t("sec")),
+                                    ("volume_step", 1, 20, "%"), ("prev_restart", 0, 30, t("sec"))):
+            sp = QSpinBox()
+            sp.setRange(lo, hi)
+            sp.setSuffix(" " + suffix)
+            sp.setValue(int(cfg.get(key, lo)))
+            if key == "prev_restart":
+                sp.setSpecialValueText(t("prev_always"))
+            self.spins[key] = sp
+            f.addRow(t(key), sp)
+        f.addRow("", _hint(t("prev_hint")))
+        c.addWidget(box)
+        self._groups(c, "playback")
+        c.addStretch(1)
         lay.addWidget(_buttons(self))
+
+    def _page(self, title_key: str) -> QVBoxLayout:
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(14, 14, 14, 12)
+        v.setSpacing(10)
+        self.tabs.addTab(w, t(title_key))
+        return v
+
+    def _groups(self, lay: QVBoxLayout, page: str):
+        for title, keys in self.CHECKS[page]:
+            box = QGroupBox(t(title))
+            v = QVBoxLayout(box)
+            v.setSpacing(6)
+            for key in keys:
+                cb = QCheckBox(t("opt_" + key))
+                cb.setChecked(bool(self.cfg.get(key)))
+                self.checks[key] = cb
+                v.addWidget(cb)
+            lay.addWidget(box)
 
     def accept(self):
         self.cfg["language"] = self.lang.currentData()
         for k, cb in self.checks.items():
             self.cfg[k] = cb.isChecked()
+        self.cfg["row_size"] = self.rows.currentData()
+        self.cfg["hidden_cols"] = [k for k, cb in self.cols.items() if not cb.isChecked()]
+        for k, sp in self.spins.items():
+            self.cfg[k] = int(sp.value())
         super().accept()
 
 
@@ -116,7 +198,9 @@ class SoundDialog(QDialog):
     speaker_test = Signal()
 
     KEYS = ("channels", "upmix", "center_db", "lfe_db", "replaygain", "rg_preamp", "rg_clip", "crossfade",
-            "xfade_album", "audio_device")
+            "xfade_album", "audio_device", "audio_exclusive", "samplerate", "fade_pause")
+    REOPEN = ("channels", "audio_device", "replaygain", "rg_preamp", "rg_clip", "audio_exclusive", "samplerate")
+    RATES = (0, 44100, 48000, 88200, 96000, 176400, 192000)
 
     def __init__(self, cfg: dict, devices: list[tuple[str, str]], parent=None):
         super().__init__(parent)
@@ -144,6 +228,16 @@ class SoundDialog(QDialog):
             self.ch.addItem(t("ch_" + key.replace(".", "")), key)
         self.ch.setCurrentIndex(max(0, self.ch.findData(cfg.get("channels", "auto"))))
         f1.addRow(t("channels"), self.ch)
+        self.sr = QComboBox()
+        for r in self.RATES:
+            self.sr.addItem(t("sr_auto") if not r else f"{audio.rate_label(r)} {t('khz')}", r)
+        self.sr.setCurrentIndex(max(0, self.sr.findData(int(cfg.get("samplerate", 0) or 0))))
+        f1.addRow(t("samplerate"), self.sr)
+        f1.addRow("", _hint(t("sr_hint")))
+        self.excl = QCheckBox(t("exclusive"))
+        self.excl.setChecked(bool(cfg.get("audio_exclusive")))
+        f1.addRow("", self.excl)
+        f1.addRow("", _hint(t("exclusive_hint")))
         self.upmix = QCheckBox(t("upmix"))
         self.upmix.setChecked(bool(cfg.get("upmix")))
         f1.addRow("", self.upmix)
@@ -183,7 +277,14 @@ class SoundDialog(QDialog):
         self.xfa = QCheckBox(t("xfade_album"))
         self.xfa.setChecked(bool(cfg.get("xfade_album", True)))
         f2.addRow("", self.xfa)
+        self.fp = QSpinBox()
+        self.fp.setRange(0, 2000)
+        self.fp.setSingleStep(50)
+        self.fp.setSuffix(" " + t("ms"))
+        self.fp.setSpecialValueText(t("xf_off"))
+        self.fp.setValue(int(cfg.get("fade_pause", 0) or 0))
         f2.addRow("", _hint(t("gapless_hint")))
+        f2.addRow(t("fade_pause"), self.fp)
         lay.addWidget(g2)
         lay.addWidget(_buttons(self))
 
@@ -195,6 +296,9 @@ class SoundDialog(QDialog):
         self.clip.toggled.connect(lambda v: self._set("rg_clip", v, True))
         self.xf.valueChanged.connect(lambda v: self._set("crossfade", int(v), False))
         self.xfa.toggled.connect(lambda v: self._set("xfade_album", v, False))
+        self.sr.currentIndexChanged.connect(lambda _i: self._set("samplerate", int(self.sr.currentData()), True))
+        self.excl.toggled.connect(lambda v: self._set("audio_exclusive", v, True))
+        self.fp.valueChanged.connect(lambda v: self._set("fade_pause", int(v), False))
 
     def set_levels(self, center: float, lfe: float):
         """The speaker test moved them."""
@@ -208,8 +312,7 @@ class SoundDialog(QDialog):
         self.changed.emit(reopen)
 
     def reject(self):
-        reopen = any(self.cfg.get(k) != self.saved[k] for k in ("channels", "audio_device", "replaygain",
-                                                                   "rg_preamp", "rg_clip"))
+        reopen = any(self.cfg.get(k) != self.saved[k] for k in self.REOPEN)
         self.cfg.update(self.saved)
         self.changed.emit(reopen)
         super().reject()
@@ -354,7 +457,7 @@ KEYS = [
     ("Space", "k_play"), ("Enter", "k_play_sel"), ("← / →", "k_seek5"), ("Shift + ← / →", "k_seek30"),
     ("Ctrl + ← / →", "k_prevnext"), ("Ctrl + ↑ / ↓,  + / −", "k_volume"), ("M", "k_mute"), ("S", "k_shuffle"),
     ("R", "k_repeat"), ("E", "k_eq"), ("Ctrl + P", "k_sound"), ("Ctrl + T", "k_test"), ("Ctrl + M", "k_mini"),
-    ("T", "k_ontop"), ("Ctrl + F", "k_find"), ("Ctrl + J", "k_jump"), ("Del", "k_delete"),
+    ("T", "k_ontop"), ("Ctrl + F", "k_find"), ("Ctrl + J", "k_jump"), ("Ctrl + Shift + E", "k_stop_after"), ("Del", "k_delete"),
     ("Ctrl + O", "k_open"), ("Ctrl + Shift + O", "k_open_folder"), ("Ctrl + L", "k_load_pl"),
     ("Ctrl + S", "k_save_pl"), ("Ctrl + ,", "k_settings"), ("⏮ ⏯ ⏭ ⏹", "k_media"), ("F1", "k_keys"),
 ]

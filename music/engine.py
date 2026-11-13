@@ -62,6 +62,10 @@ class Deck(QObject):
         dev = cfg.get("audio_device") or "auto"
         if dev != "auto":
             opts["audio_device"] = dev
+        if cfg.get("audio_exclusive"):
+            opts["audio_exclusive"] = "yes"
+        if int(cfg.get("samplerate", 0) or 0):
+            opts["audio_samplerate"] = int(cfg["samplerate"])
         self.m = mpvmod.MPV(**opts)
         self.version = _mpv_version(self.m)
         self.track: Track | None = None      # what this deck plays (or loads)
@@ -205,6 +209,10 @@ class Engine(QObject):
         self.fade_timer = QTimer(self)
         self.fade_timer.setInterval(self.TICK_MS)
         self.fade_timer.timeout.connect(self._fade_tick)
+        self.pfade: dict | None = None        # fade on pause / resume: {"deck", "t0", "len", "out"}
+        self.pfade_timer = QTimer(self)
+        self.pfade_timer.setInterval(15)
+        self.pfade_timer.timeout.connect(self._pfade_tick)
         self.set_volume(int(cfg.get("volume", 80)), bool(cfg.get("muted")))
 
     # ── decks ─────────────────────────────────────────────────
@@ -230,6 +238,7 @@ class Engine(QObject):
 
     # ── commands ──────────────────────────────────────────────
     def play(self, track: Track, offset: float = 0.0, paused: bool = False):
+        self._pfade_cancel()
         self._end_fade()
         self.cur = track
         self.stopped = False
@@ -253,14 +262,59 @@ class Engine(QObject):
             return
         if p and self.fade:
             self._end_fade()
+        was_fading_out = self.pfade is not None and self.pfade["out"]
+        self._pfade_cancel()
+        if p == self.paused and not was_fading_out:
+            return
         self.paused = p
-        try:
-            self.mpv.pause = p
-        except Exception:
-            pass
+        ms = int(self.cfg.get("fade_pause", 0) or 0)
+        d = self.deck
+        if ms > 0 and not self.muted and not d.pending:
+            self.pfade = {"deck": d, "t0": time.monotonic(), "len": ms / 1000.0, "out": p}
+            if not p:                                    # resume from silence
+                d.factor = 0.0
+                d.set_volume(self.volume, self.muted)
+                try:
+                    d.m.pause = False
+                except Exception:
+                    pass
+            self.pfade_timer.start()
+        else:
+            try:
+                self.mpv.pause = p
+            except Exception:
+                pass
         self.paused_changed.emit(p)
 
+    def _pfade_tick(self):
+        f = self.pfade
+        if not f:
+            self.pfade_timer.stop()
+            return
+        k = min(1.0, (time.monotonic() - f["t0"]) / max(0.01, f["len"]))
+        f["deck"].factor = (1.0 - k) if f["out"] else k
+        f["deck"].set_volume(self.volume, self.muted)
+        if k >= 1.0:
+            self._pfade_cancel(finish=True)
+
+    def _pfade_cancel(self, finish: bool = False):
+        """Stop the pause fade; finish=True: a fade-out has reached silence, pause mpv now."""
+        f = self.pfade
+        if not f:
+            return
+        self.pfade = None
+        self.pfade_timer.stop()
+        d = f["deck"]
+        if f["out"] and finish:
+            try:
+                d.m.pause = True
+            except Exception:
+                pass
+        d.factor = 1.0
+        d.set_volume(self.volume, self.muted)
+
     def stop(self):
+        self._pfade_cancel()
         self._end_fade()
         for d in self.decks:
             d.stop()
@@ -318,7 +372,9 @@ class Engine(QObject):
                          ("replaygain_preamp", float(self.cfg.get("rg_preamp", 0))),
                          ("replaygain_clip", "yes" if self.cfg.get("rg_clip", True) else "no"),
                          ("audio_channels", audio.CHANNEL_MODES.get(self.cfg.get("channels", "auto"), "auto-safe")),
-                         ("audio_device", self.cfg.get("audio_device") or "auto")):
+                         ("audio_device", self.cfg.get("audio_device") or "auto"),
+                         ("audio_exclusive", "yes" if self.cfg.get("audio_exclusive") else "no"),
+                         ("audio_samplerate", int(self.cfg.get("samplerate", 0) or 0))):
                 try:
                     setattr(d.m, k, v)
                 except Exception:
@@ -348,6 +404,7 @@ class Engine(QObject):
 
     def shutdown(self):
         self.fade_timer.stop()
+        self.pfade_timer.stop()
         for d in self.decks:
             d.terminate()
 
