@@ -397,14 +397,15 @@ class Engine(QObject):
 
     def levels(self) -> list[tuple[str, float, float]]:
         """What the speakers get right now: [(channel, rms dB, peak dB)] after upmix / levels / EQ, before the
-        volume; [] when nothing plays. During a crossfade — the louder of the two decks per channel."""
+        volume — folded to 2 channels when the output is stereo; [] when nothing plays. During a crossfade — the louder of the two decks per channel."""
         if self.stopped or self.paused:
             return []
         out: dict[str, list[float]] = {}
         for d in self.decks:
             if d.track is None:
                 continue
-            for name, rms, peak in audio.parse_meter(d.node("af-metadata/meter")):
+            oc = int((d.node("audio-out-params") or {}).get("channel-count") or 0)
+            for name, rms, peak in audio.fold_meter(audio.parse_meter(d.node("af-metadata/meter")), oc):
                 gain = 20 * math.log10(max(1e-6, d.factor)) if d.factor < 1 else 0.0
                 cur = out.setdefault(name, [-120.0, -120.0])
                 cur[0] = max(cur[0], rms + gain)
