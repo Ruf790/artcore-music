@@ -320,3 +320,39 @@ def test_lyrics_panel(qapp, mpvmod, media, data_dir, tmp_path):
     w.next()
     assert w._lyr is None and not w.lyrics.isVisible() and not w.b_lyrics.isVisible()
     w.close()
+
+
+def test_tag_editor(qapp, mpvmod, media, data_dir, tmp_path):
+    import shutil
+    import subprocess
+    from music import meta
+    from music.dialogs import TagEditorDialog
+    d = tmp_path / "Untagged"
+    d.mkdir()
+    for n in ("01 - Ed Solo & Deekline - Hit The Road Jack", "02 - Benny Page - Dangerous"):
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=d=1", "-map_metadata", "-1",
+                        str(d / (n + ".mp3"))], check=True)
+    shutil.copy(os.path.join(media, "Stereo Album", "01 - Первый трек.mp3"), d / "03 - tagged.mp3")
+    w = _win(mpvmod)
+    w.open_paths([str(d)])
+    pump(qapp, 0.4)
+    two = w.pl.tracks[:2]
+    dlg = TagEditorDialog(two, w)
+    dlg.pattern.setCurrentIndex(dlg.pattern.findData("track_artist_title"))
+    dlg._from_name()
+    assert len(dlg.guess) == 2
+    dlg.edits["album"].setText("Welcome To The Jungle")
+    dlg.touched.add("album")
+    dlg.accept()
+    assert not dlg.errors and len(dlg.changed) == 2
+    tg = meta.read(two[0].path)
+    assert (tg.track, tg.artist, tg.title, tg.album) == ("1", "Ed Solo & Deekline", "Hit The Road Jack",
+                                                        "Welcome To The Jungle")
+    assert two[1].artist == "Benny Page" and two[1].album == "Welcome To The Jungle"      # the playlist follows
+    one = TagEditorDialog([w.pl.tracks[2]], w)                         # one file: the fields hold its tags
+    assert one.edits["artist"].text() == "ArtCore Band"
+    one.edits["genre"].setText("Jungle")
+    one.touched.add("genre")
+    one.accept()
+    assert meta.read(w.pl.tracks[2].path).genre == "Jungle" and meta.read(w.pl.tracks[2].path).artist == "ArtCore Band"
+    w.close()
