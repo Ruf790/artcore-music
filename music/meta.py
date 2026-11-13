@@ -61,6 +61,8 @@ MP4_MAP = {"title": "\xa9nam", "artist": "\xa9ART", "album": "\xa9alb", "albumar
            "track": "trkn", "disc": "disk", "genre": "\xa9gen"}
 VORBIS_MAP = {"title": "title", "artist": "artist", "album": "album", "albumartist": "albumartist", "year": "date",
               "track": "tracknumber", "disc": "discnumber", "genre": "genre"}
+ASF_MAP = {"title": "Title", "artist": "Author", "album": "WM/AlbumTitle", "albumartist": "WM/AlbumArtist",
+           "year": "WM/Year", "track": "WM/TrackNumber", "genre": "WM/Genre"}
 APE_MAP = {"title": "Title", "artist": "Artist", "album": "Album", "albumartist": "Album Artist", "year": "Year",
            "track": "Track", "disc": "Disc", "genre": "Genre"}
 
@@ -106,6 +108,10 @@ def read(path: str) -> Tags:
             setattr(tg, attr, _first(tags.get(real)) if real else "")
         tg.cuesheet = _first(tags.get(low["cuesheet"])) if "cuesheet" in low else ""
         tg.has_picture = "cover art (front)" in low
+    elif cls == "ASFTags":                       # WMA
+        for attr, k in ASF_MAP.items():
+            setattr(tg, attr, _first(tags.get(k)))
+        tg.has_picture = "WM/Picture" in keys
     else:                                        # Vorbis comments: FLAC, Ogg, Opus
         get = lambda k: _first(tags.get(k) or tags.get(k.upper()))
         for attr, k in VORBIS_MAP.items():
@@ -202,3 +208,96 @@ def cover_bytes(path: str) -> bytes:
         except OSError:
             pass
     return b""
+
+
+# ── writing ──────────────────────────────────────────────────
+EDITABLE = ("title", "artist", "album", "albumartist", "year", "track", "genre")
+
+
+def write(path: str, values: dict) -> None:
+    """Write tags: {"title": "…", "artist": "…", …} (keys of EDITABLE); "" removes the tag. Raises on failure.
+    MP3 / WAV / AIFF / DSF get ID3v2.3 (read by every player and by Windows), FLAC / Ogg / Opus Vorbis comments,
+    M4A MP4 atoms, APE / WavPack / TAK / MPC APEv2, WMA ASF."""
+    import mutagen
+    f = mutagen.File(path)
+    if f is None:
+        raise ValueError("unsupported file")
+    if f.tags is None:
+        f.add_tags()
+    tags = f.tags
+    cls = type(tags).__name__
+    vals = {k: (str(v) if v is not None else "").strip() for k, v in values.items() if k in EDITABLE}
+    from mutagen.id3 import ID3
+    if isinstance(tags, ID3):                                # MP3, and the ID3 chunk of WAV / AIFF / DSF
+        from mutagen import id3
+        for attr, v in vals.items():
+            fid = ID3_MAP[attr]
+            tags.delall(fid)
+            if fid == "TDRC":
+                tags.delall("TYER")
+            if v:
+                tags.add(getattr(id3, fid)(encoding=3, text=[v]))
+        try:
+            f.save(v2_version=3)
+        except TypeError:
+            f.save()
+        return
+    if cls == "MP4Tags":
+        for attr, v in vals.items():
+            k = MP4_MAP[attr]
+            if attr == "track":
+                old = tags.get("trkn") or [(0, 0)]
+                n = int(_num(v) or 0)
+                if n:
+                    tags["trkn"] = [(n, old[0][1] if old and len(old[0]) > 1 else 0)]
+                else:
+                    tags.pop("trkn", None)
+            elif v:
+                tags[k] = [v]
+            else:
+                tags.pop(k, None)
+    elif cls == "APEv2":
+        low = {k.lower(): k for k in tags.keys()}
+        for attr, v in vals.items():
+            k = APE_MAP[attr]
+            if k.lower() in low:
+                del tags[low[k.lower()]]
+            if v:
+                tags[k] = v
+    elif cls == "ASFTags":
+        for attr, v in vals.items():
+            k = ASF_MAP[attr]
+            if k in tags:
+                del tags[k]
+            if v:
+                tags[k] = [v]
+    else:                                                    # Vorbis comments
+        for attr, v in vals.items():
+            k = VORBIS_MAP[attr]
+            for old in [x for x in tags.keys() if x.lower() == k or (attr == "year" and x.lower() == "year")]:
+                del tags[old]
+            if v:
+                tags[k] = [v]
+    f.save()
+
+
+FILENAME_PATTERNS = {
+    "artist_title":       r"^(?P<artist>.+?)\s+[-–—]\s+(?P<title>.+)$",
+    "track_artist_title": r"^(?P<track>\d{1,3})[\s.\-_)]*\s*(?P<artist>.+?)\s+[-–—]\s+(?P<title>.+)$",
+    "track_title":        r"^(?P<track>\d{1,3})[\s.\-_)]+\s*(?P<title>.+)$",
+    "artist_album_track_title": r"^(?P<artist>.+?)\s+[-–—]\s+(?P<album>.+?)\s+[-–—]\s+(?P<track>\d{1,3})\s+[-–—]\s+"
+                                r"(?P<title>.+)$",
+    "title":              r"^(?P<title>.+)$",
+}
+
+
+def from_filename(path: str, pattern: str) -> dict:
+    """Tags guessed from «05 - DJ X - Track Y.mp3» by a FILENAME_PATTERNS key ({} if it does not fit)."""
+    stem = os.path.splitext(os.path.basename(path))[0].replace("_", " ").strip()
+    m = re.match(FILENAME_PATTERNS[pattern], stem)
+    if not m:
+        return {}
+    out = {k: re.sub(r"\s+", " ", v).strip() for k, v in m.groupdict().items() if v}
+    if "track" in out:
+        out["track"] = _num(out["track"])
+    return out

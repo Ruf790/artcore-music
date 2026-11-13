@@ -5,7 +5,8 @@ import os
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import QAbstractItemView, QLabel, QToolButton, QTreeWidget, QWidget
+from PySide6.QtWidgets import (QAbstractItemView, QLabel, QListWidget, QListWidgetItem, QToolButton,
+                               QTreeWidget, QWidget)
 
 from . import style
 
@@ -419,6 +420,78 @@ class PlaylistView(QTreeWidget):
                 ch = top.takeChild(0)
                 self.insertTopLevelItem(i + 1, ch)
         self.reordered.emit()
+
+
+class LyricsView(QListWidget):
+    """The lyrics under the cover: the line being sung is bright and kept in the middle, the rest dim; a click
+    on a line of synced lyrics seeks there."""
+    seek = Signal(float)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("lyrics")
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setSelectionMode(QAbstractItemView.NoSelection)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setWordWrap(True)
+        self.setStyleSheet("QListWidget#lyrics { background: transparent; border: none; }"
+                           "QListWidget#lyrics::item { padding: 3px 2px; border: none; }"
+                           "QListWidget#lyrics::item:hover { background: rgba(255,255,255,12); border-radius: 6px; }")
+        self.lyr = None
+        self.cur = -2
+        self.user_scrolled_at = 0.0
+        self.itemClicked.connect(self._clicked)
+
+    def set_lyrics(self, lyr):
+        self.lyr = lyr
+        self.cur = -2
+        self.clear()
+        if lyr is None:
+            return
+        f = QFont(self.font())
+        f.setPointSizeF(max(9.0, f.pointSizeF() + 1.5))
+        for line in lyr.lines:
+            it = QListWidgetItem(line if line.strip() else "♪" if lyr.synced else "")
+            it.setFont(f)
+            it.setForeground(QColor(style.TEXT if not lyr.synced else style.MUTED))
+            self.addItem(it)
+        self.scrollToTop()
+
+    def set_pos(self, sec: float):
+        if self.lyr is None or not self.lyr.synced:
+            return
+        i = self.lyr.index_at(sec)
+        if i == self.cur:
+            return
+        old, self.cur = self.cur, i
+        if 0 <= old < self.count():
+            it = self.item(old)
+            f = it.font()
+            f.setBold(False)
+            it.setFont(f)
+            it.setForeground(QColor(style.MUTED))
+        if 0 <= i < self.count():
+            it = self.item(i)
+            f = it.font()
+            f.setBold(True)
+            it.setFont(f)
+            it.setForeground(QColor("#ffffff"))
+            import time
+            if time.monotonic() - self.user_scrolled_at > 4:         # don't fight the user's scrolling
+                self.scrollToItem(it, QAbstractItemView.PositionAtCenter)
+
+    def wheelEvent(self, e):
+        import time
+        self.user_scrolled_at = time.monotonic()
+        super().wheelEvent(e)
+
+    def _clicked(self, it):
+        if self.lyr is not None and self.lyr.synced:
+            r = self.row(it)
+            if 0 <= r < len(self.lyr.times):
+                self.user_scrolled_at = 0.0
+                self.seek.emit(self.lyr.times[r])
 
 
 class ClickLabel(QLabel):

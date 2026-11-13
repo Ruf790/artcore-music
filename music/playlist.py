@@ -329,14 +329,16 @@ def expand(paths: list[str]) -> list[Track]:
 class Playlist:
     """The list plus the play order: repeat off / all / one, shuffle (a shuffled order of uids)."""
 
-    def __init__(self):
+    def __init__(self, name: str = "", kind: str = ""):
+        self.name = name
+        self.kind = kind                     # "" | "favorites" | "history" (filled from the library)
+        self.scroll = 0                      # where the list was scrolled (when its tab is shown again)
         self.tracks: list[Track] = []
         self.repeat = "off"
         self.shuffle = False
         self._order: list[int] = []          # uids, shuffled; used when shuffle is on
         self._gone_at = 0                    # where the playing track was when it got removed
         self._map: dict[int, Track] = {}     # uid → track
-        self.stop_after: int | None = None   # uid: the playlist stops after this track
 
     # ── lookups
     def index_of(self, t: Track | None) -> int:
@@ -373,8 +375,6 @@ class Playlist:
     def next_after(self, t: Track | None, auto: bool = True) -> Track | None:
         seq = self._seq()
         if not seq:
-            return None
-        if t is not None and auto and self.stop_after is not None and t.uid == self.stop_after:
             return None
         if t is not None and auto and self.repeat == "one" and self.index_of(t) >= 0:
             return t
@@ -451,7 +451,6 @@ class Playlist:
         self._order = []
         self._gone_at = 0
         self._map = {}
-        self.stop_after = None
 
     def sort(self, key: str):
         keys = {

@@ -9,19 +9,24 @@ import time
 from PySide6.QtCore import QByteArray, QObject, QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QActionGroup, QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
-                               QMainWindow,
+                               QMainWindow, QTabBar,
                                QMenu, QMessageBox, QSlider, QSplitter, QSystemTrayIcon, QTreeWidgetItem, QVBoxLayout,
                                QWidget)
 
 from . import APP_TITLE, AUDIO_EXT, CUE_EXT, PLAYLIST_EXT, VERSION, audio, config, meta, style, winint
 from .engine import Engine
+from .library import Favorites, History
 from .i18n import t
 from .playlist import Playlist, Track, expand, fill_tags, is_url, write_m3u
 from .waveform import Waveforms, key_of
-from .widgets import ClickLabel, CoverView, PlaylistView, SeekBar, Toast, WaveSeekBar, ctl_button, elide, fmt_time
+from . import lyrics as lyrics_mod
+from .widgets import ClickLabel, CoverView, LyricsView, PlaylistView, SeekBar, Toast, WaveSeekBar, ctl_button, elide, fmt_time
 
-COL_N, COL_TITLE, COL_ARTIST, COL_ALBUM, COL_LEN = range(5)
-COL_KEYS = {"n": COL_N, "artist": COL_ARTIST, "album": COL_ALBUM, "len": COL_LEN}
+COL_N, COL_TITLE, COL_ARTIST, COL_ALBUM, COL_LEN, COL_FAV = range(6)
+NCOLS = 6
+COL_KEYS = {"n": COL_N, "artist": COL_ARTIST, "album": COL_ALBUM, "len": COL_LEN, "fav": COL_FAV}
+ACCENT_TEXT = "#8fb8ff"
+STAR = "#f5c518"
 ROW_PAD = {"compact": 2, "normal": 5, "large": 9}
 SLEEP_MINUTES = (15, 30, 45, 60, 90, 120)
 UID = Qt.UserRole + 1
@@ -161,10 +166,15 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self.resize(1180, 720)
         self.setMinimumSize(760, 480)
-        self.pl = Playlist()
-        self.pl.repeat = cfg.get("repeat", "off")
-        self.pl.shuffle = bool(cfg.get("shuffle"))
+        self.pls: list[Playlist] = [self._new_pl(t("playlist"))]   # the tabs
+        self.pl = self.pls[0]                                          # the one shown
+        self.favs = Favorites()
+        self.history = History()
         self.engine = Engine(mpv_module, cfg, self.pl)
+        self.engine.queue_changed.connect(self._on_queue)
+        self.smtc = None
+        self._smtc_sent = (0.0, 0.0)                    # (time, position) of the last timeline update
+        self._setup_smtc()
         self.engine.track_changed.connect(self._on_track)
         self.engine.position.connect(self._on_pos)
         self.engine.paused_changed.connect(self._on_paused)
@@ -265,13 +275,49 @@ class MainWindow(QMainWindow):
         self.t_format.hide()
         row.addWidget(self.t_format)
         row.addStretch(1)
+        self.b_lyrics = ctl_button("fa6s.align-left", t("lyrics") + " (L)", 15, self.toggle_lyrics)
+        self.b_lyrics.hide()
+        row.addWidget(self.b_lyrics)
         lay.addLayout(row)
         self.t_next = QLabel()
         self.t_next.setObjectName("hint")
         self.t_next.setWordWrap(True)
         lay.addWidget(self.t_next)
+        self.lyrics = LyricsView()
+        self.lyrics.seek.connect(self.engine.seek)
+        self.lyrics.hide()
+        lay.addWidget(self.lyrics, 1)
         lay.addStretch(1)
+        self.now_lay = lay
+        self._lyr = None
         return w
+
+    # ── lyrics ────────────────────────────────────────────────
+    def _load_lyrics(self, tr: Track | None):
+        lyr = lyrics_mod.load(tr) if self.cfg.get("lyrics", True) else None
+        self._lyr = lyr
+        self.lyrics.set_lyrics(lyr)
+        self.b_lyrics.setVisible(lyr is not None)
+        if lyr is not None:
+            self.b_lyrics.setToolTip(t("lyrics") + (" (LRC)" if lyr.synced else "") + " (L)\n" +
+                                     (os.path.basename(lyr.source) if lyr.source != "tags" else t("lyrics_tags")))
+        self._apply_lyrics_visible()
+
+    def _apply_lyrics_visible(self):
+        on = self._lyr is not None and bool(self.cfg.get("lyrics_show", True))
+        self.lyrics.setVisible(on)
+        self.b_lyrics.setObjectName("on" if on else "ctl")
+        self.b_lyrics.style().unpolish(self.b_lyrics)
+        self.b_lyrics.style().polish(self.b_lyrics)
+        # the spacer at the end takes the room only when there are no lyrics
+        self.now_lay.setStretch(self.now_lay.count() - 1, 0 if on else 1)
+        self.cover.setMaximumHeight(220 if on else 16777215)
+        if on:
+            self.lyrics.set_pos(self._last_pos[0])
+
+    def toggle_lyrics(self):
+        self.cfg["lyrics_show"] = not self.cfg.get("lyrics_show", True)
+        self._apply_lyrics_visible()
 
     def _build_list(self) -> QWidget:
         w = QWidget()
@@ -306,8 +352,30 @@ class MainWindow(QMainWindow):
         top.addWidget(ctl_button("fa6s.floppy-disk", t("save_pl") + " (Ctrl+S)", 17, self.save_playlist_dialog))
         top.addWidget(ctl_button("fa6s.trash-can", t("clear_pl"), 17, self.clear_playlist))
         lay.addLayout(top)
+        tabs = QHBoxLayout()
+        tabs.setSpacing(2)
+        self.tabbar = QTabBar()
+        self.tabbar.setObjectName("plTabs")
+        self.tabbar.setMovable(True)
+        self.tabbar.setTabsClosable(True)
+        self.tabbar.setExpanding(False)
+        self.tabbar.setDocumentMode(True)
+        self.tabbar.setElideMode(Qt.ElideRight)
+        self.tabbar.setUsesScrollButtons(True)
+        self.tabbar.addTab(self.pl.name)
+        self.tabbar.currentChanged.connect(self._tab_changed)
+        self.tabbar.tabCloseRequested.connect(self.close_tab)
+        self.tabbar.tabMoved.connect(self._tab_moved)
+        self.tabbar.tabBarDoubleClicked.connect(self.rename_tab)
+        self.tabbar.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tabbar.customContextMenuRequested.connect(self._tab_menu)
+        tabs.addWidget(self.tabbar, 1)
+        tabs.addWidget(ctl_button("fa6s.plus", t("new_tab") + " (Ctrl+N)", 14, lambda: self.new_tab()))
+        lay.addLayout(tabs)
         self.view = PlaylistView()
-        self.view.setHeaderLabels(["#", t("col_title"), t("col_artist"), t("col_album"), t("col_len")])
+        self.view.setHeaderLabels(["#", t("col_title"), t("col_artist"), t("col_album"), t("col_len"), ""])
+        self.view.headerItem().setIcon(COL_FAV, style.icon("fa6s.star", style.MUTED))
+        self.view.headerItem().setToolTip(COL_FAV, t("fav") + " (Ctrl+D)")
         hdr = self.view.header()
         hdr.setStretchLastSection(False)
         hdr.setSectionResizeMode(COL_N, QHeaderView.Fixed)
@@ -315,12 +383,15 @@ class MainWindow(QMainWindow):
         hdr.setSectionResizeMode(COL_ARTIST, QHeaderView.Interactive)
         hdr.setSectionResizeMode(COL_ALBUM, QHeaderView.Interactive)
         hdr.setSectionResizeMode(COL_LEN, QHeaderView.Fixed)
+        hdr.setSectionResizeMode(COL_FAV, QHeaderView.Fixed)
         hdr.setSectionsClickable(True)
         hdr.sectionClicked.connect(self._sort_by_column)
         self.view.setColumnWidth(COL_N, 46)
         self.view.setColumnWidth(COL_ARTIST, 170)
         self.view.setColumnWidth(COL_ALBUM, 170)
         self.view.setColumnWidth(COL_LEN, 64)
+        self.view.setColumnWidth(COL_FAV, 30)
+        self.view.itemClicked.connect(self._item_clicked)
         cols = self.cfg.get("columns") or []
         if len(cols) == 2:
             self.view.setColumnWidth(COL_ARTIST, int(cols[0]))
@@ -414,6 +485,7 @@ class MainWindow(QMainWindow):
                 s.activated.connect(fn)
         sc("Space", self.toggle_pause)
         step = lambda k: int(self.cfg.get(k, 5))           # noqa: E731
+        not_typing = lambda fn: (lambda: None if self.search.hasFocus() else fn())   # noqa: E731
         sc("Left", lambda: self.engine.seek_rel(-step("seek_step")))
         sc("Right", lambda: self.engine.seek_rel(step("seek_step")))
         sc("Shift+Left", lambda: self.engine.seek_rel(-step("seek_step_big")))
@@ -433,7 +505,18 @@ class MainWindow(QMainWindow):
         sc("Ctrl+F", lambda: (self.search.setFocus(), self.search.selectAll()))
         sc("Ctrl+J", self.jump_to_current)
         sc("Ctrl+Shift+E", self.toggle_stop_after)
-        sc("Delete", self.remove_selected)
+        sc("Ctrl+N", lambda: self.new_tab())
+        sc("Ctrl+W", lambda: self.close_tab(self.tabbar.currentIndex()))
+        sc("Ctrl+Tab", lambda: self.tabbar.setCurrentIndex((self.tabbar.currentIndex() + 1) % self.tabbar.count()))
+        sc("Ctrl+Shift+Tab", lambda: self.tabbar.setCurrentIndex((self.tabbar.currentIndex() - 1) % self.tabbar.count()))
+        sc("Ctrl+D", self.toggle_fav_selected)
+        sc("F2", not_typing(self.edit_tags_selected))
+        sc("L", self.toggle_lyrics)
+        sc("Ctrl+Q", lambda: self.queue_selected(front=True))
+        sc("Ctrl+Shift+Q", lambda: self.queue_selected(front=False))
+        sc("Ctrl+H", lambda: self.open_library_tab("history"))
+        sc("Ctrl+B", lambda: self.open_library_tab("favorites"))
+        sc("Delete", not_typing(self.remove_selected))
         sc("Ctrl+O", self.add_files_dialog)
         sc("Ctrl+Shift+O", self.add_folder_dialog)
         sc("Ctrl+U", self.add_url_dialog)
@@ -450,6 +533,240 @@ class MainWindow(QMainWindow):
         sc(QKeySequence(Qt.Key_MediaPrevious), self.prev)
         sc(QKeySequence(Qt.Key_MediaStop), self.stop)
 
+    # ── tabs ──────────────────────────────────────────────────
+    def _new_pl(self, name: str, kind: str = "") -> Playlist:
+        p = Playlist(name, kind)
+        p.repeat = self.cfg.get("repeat", "off")
+        p.shuffle = bool(self.cfg.get("shuffle"))
+        return p
+
+    def _set_tabs(self, pls: list[Playlist], view: int = 0):
+        """Replace all tabs (session restore)."""
+        self.pls = pls
+        self.tabbar.blockSignals(True)
+        while self.tabbar.count():
+            self.tabbar.removeTab(0)
+        for p in pls:
+            self.tabbar.addTab(p.name)
+        self.tabbar.setCurrentIndex(view)
+        self.tabbar.blockSignals(False)
+        self.pl = pls[view]
+        if self.engine.pl not in pls:
+            self.engine.pl = self.pl
+        self._rebuild_list()
+        self._restore_scroll()
+        self._tab_icons()
+
+    def _set_playing_pl(self, p: Playlist, first: Track | None = None):
+        """`p` becomes the playlist the player goes through (repeat / shuffle follow the settings)."""
+        p.repeat = self.cfg.get("repeat", "off")
+        p.shuffle = bool(self.cfg.get("shuffle"))
+        if p.shuffle:
+            p.reshuffle(first)
+        self.engine.pl = p
+        self.engine.ctx = first
+        self._tab_icons()
+
+    def _tab_icons(self):
+        for i, p in enumerate(self.pls):
+            if p is self.engine.pl and self.engine.cur is not None:
+                self.tabbar.setTabIcon(i, style.icon("fa6s.volume-high", ACCENT_TEXT))
+            elif p.kind == "favorites":
+                self.tabbar.setTabIcon(i, style.icon("fa6s.star", STAR))
+            elif p.kind == "history":
+                self.tabbar.setTabIcon(i, style.icon("fa6s.clock-rotate-left", style.MUTED))
+            else:
+                self.tabbar.setTabIcon(i, style.icon("fa6s.music", "#00000000"))
+            self.tabbar.setTabToolTip(i, f"{p.name} — {t('pl_count', len(p.tracks), fmt_time(sum(x.duration() for x in p.tracks)))}")
+
+    def _tab_changed(self, i: int):
+        if not 0 <= i < len(self.pls) or self.pls[i] is self.pl:
+            return
+        self.pl.scroll = self.view.verticalScrollBar().value()
+        self.pl = self.pls[i]
+        self._searching = False
+        self._rebuild_list()
+        self._restore_scroll()
+        self._dirty = True
+
+    def _restore_scroll(self):
+        sc = self.pl.scroll
+        QTimer.singleShot(0, lambda: self.view.verticalScrollBar().setValue(sc))
+
+    def _tab_moved(self, a: int, b: int):
+        self.pls.insert(b, self.pls.pop(a))
+        self._dirty = True
+        self.dirty_timer.start()
+
+    def new_tab(self, name: str = "", kind: str = "", switch: bool = True) -> Playlist:
+        if not name:
+            n = len(self.pls) + 1
+            names = {p.name for p in self.pls}
+            while t("playlist_n", n) in names:
+                n += 1
+            name = t("playlist_n", n)
+        p = self._new_pl(name, kind)
+        self.pls.append(p)
+        self.tabbar.addTab(name)
+        self._tab_icons()
+        if switch:
+            self.tabbar.setCurrentIndex(len(self.pls) - 1)
+        self.dirty_timer.start()
+        return p
+
+    def rename_tab(self, i: int):
+        if not 0 <= i < len(self.pls):
+            return
+        p = self.pls[i]
+        name, ok = QInputDialog.getText(self, t("rename_tab"), t("tab_name"), QLineEdit.Normal, p.name)
+        name = (name or "").strip()
+        if ok and name:
+            p.name = name
+            self.tabbar.setTabText(i, name)
+            if p is self.pl:
+                self.pl_title.setText(name)
+            self._tab_icons()
+            self.dirty_timer.start()
+
+    def close_tab(self, i: int):
+        if not 0 <= i < len(self.pls):
+            return
+        p = self.pls[i]
+        if p.tracks and not p.kind and self.cfg.get("confirm_clear", True):
+            r = QMessageBox.question(self, APP_TITLE, t("close_tab_q", p.name, len(p.tracks)),
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if r != QMessageBox.Yes:
+                return
+        if self.engine.queue:
+            self.engine.dequeue([tr for tr in p.tracks if self.engine.queue_pos(tr)])
+        if len(self.pls) == 1:                         # the last tab is cleared, not closed
+            self.clear_playlist(confirm=False)
+            return
+        if p is self.engine.pl:
+            self.engine.stop()
+            self.engine.cur = None
+            self.engine.stop_after = None
+            self._show_track(None)
+        self.pls.pop(i)
+        self.tabbar.removeTab(i)                       # currentChanged switches the view
+        if self.engine.pl not in self.pls:
+            self.engine.pl = self.pl
+        self._tab_icons()
+        self._dirty = True
+        self.dirty_timer.start()
+
+    def _tab_menu(self, pos):
+        i = self.tabbar.tabAt(pos)
+        m = QMenu(self)
+        m.addAction(style.icon("fa6s.plus"), t("new_tab") + "\tCtrl+N", lambda: self.new_tab())
+        if i >= 0:
+            m.addAction(style.icon("fa6s.pen"), t("rename_tab"), lambda: self.rename_tab(i))
+            m.addAction(style.icon("fa6s.floppy-disk"), t("save_pl"), lambda: (self.tabbar.setCurrentIndex(i),
+                                                                                self.save_playlist_dialog()))
+            m.addSeparator()
+            m.addAction(style.icon("fa6s.xmark"), t("close_tab") + "\tCtrl+W", lambda: self.close_tab(i))
+        m.exec(self.tabbar.mapToGlobal(pos))
+
+    # ── favourites, history, queue ────────────────────────────
+    def _fill_library(self, p: Playlist):
+        tracks = self.favs.tracks() if p.kind == "favorites" else self.history.tracks()
+        p.clear()
+        p.add(tracks)
+        self.tags.add([x for x in tracks if not x.tagged])
+
+    def open_library_tab(self, kind: str):
+        """★ Favourites / Recently played as a tab, filled afresh (left alone while it is playing)."""
+        i = next((k for k, p in enumerate(self.pls) if p.kind == kind), -1)
+        if i < 0:
+            p = self.new_tab(t("favorites") if kind == "favorites" else t("history"), kind, switch=False)
+            i = len(self.pls) - 1
+        p = self.pls[i]
+        if p is not self.engine.pl or self.engine.cur is None:
+            self._fill_library(p)
+        if self.tabbar.currentIndex() == i:
+            self._rebuild_list()
+        else:
+            self.tabbar.setCurrentIndex(i)
+        self._tab_icons()
+        self.view.scrollToTop()
+
+    def _selected_tracks(self) -> list[Track]:
+        out = []
+        for i in range(self.view.topLevelItemCount()):        # in list order, not click order
+            it = self.view.topLevelItem(i)
+            if it.isSelected():
+                tr = self.pl.by_uid(it.data(0, UID))
+                if tr is not None:
+                    out.append(tr)
+        return out
+
+    def toggle_fav_selected(self):
+        sel = self._selected_tracks() or ([self.engine.cur] if self.engine.cur is not None else [])
+        if not sel:
+            return
+        on = not all(self.favs.has(x) for x in sel)
+        for x in sel:
+            self.favs.set(x, on)
+        self._refresh_all()
+        self.toast.show_text(t("fav_on") if on else t("fav_off"), 1100)
+
+    def _item_clicked(self, it: QTreeWidgetItem, col: int):
+        if col != COL_FAV:
+            return
+        tr = self.pl.by_uid(it.data(0, UID))
+        if tr is not None:
+            self.favs.toggle(tr)
+            self._fill_item(it, tr)
+
+    def queue_selected(self, front: bool = True):
+        sel = self._selected_tracks()
+        if not sel:
+            return
+        self.engine.enqueue(sel, front=front)
+        self.toast.show_text(t("queued_next", len(sel)) if front else t("queued_end", len(sel)), 1300)
+
+    def _on_queue(self):
+        shown = getattr(self, "_queued_shown", set())
+        now = {x.uid for x in self.engine.queue}
+        for uid in shown | now:
+            self._refresh_item(uid)
+        self._queued_shown = now
+        self._update_next_label()
+        if self.engine.cur is not None:
+            self.waves.prefetch(self.engine.next_track(self.engine.cur, auto=True))
+
+    def _play_track(self, tr: Track):
+        """Play a track of any tab (from the queue menu)."""
+        p = next((p for p in self.pls if p.by_uid(tr.uid) is tr), None)
+        if p is not None and p is not self.engine.pl:
+            self._set_playing_pl(p, tr)
+        self.engine.play(tr)
+
+    def edit_tags_selected(self):
+        from .dialogs import TagEditorDialog
+        sel = [x for x in self._selected_tracks() if not x.is_stream and not x.is_cue]
+        if not sel:
+            if any(x.is_cue or x.is_stream for x in self._selected_tracks()):
+                self.toast.show_text(t("tags_not_here"), 2200)
+            return
+        d = TagEditorDialog(sel, self)
+        if d.exec():
+            for x in d.changed:
+                self._refresh_item(x.uid)
+                if self.engine.cur is x:
+                    self._tags_path = ""
+                    self._show_track(x)
+            self._list_changed()
+            if d.errors:
+                QMessageBox.warning(self, APP_TITLE, t("tags_failed", "\n".join(d.errors[:8])))
+        d.deleteLater()
+
+    def _refresh_all(self):
+        for uid, it in self.items.items():
+            tr = self.pl.by_uid(uid)
+            if tr is not None:
+                self._fill_item(it, tr)
+
     # ── playlist view ─────────────────────────────────────────
     def _make_item(self, tr: Track) -> QTreeWidgetItem:
         it = QTreeWidgetItem()
@@ -461,7 +778,8 @@ class MainWindow(QMainWindow):
         return it
 
     def _fill_item(self, it: QTreeWidgetItem, tr: Track):
-        it.setText(COL_N, tr.number or "")
+        qpos = self.engine.queue_pos(tr)
+        it.setText(COL_N, str(qpos) if qpos else (tr.number or ""))
         it.setText(COL_TITLE, tr.display_title())
         it.setText(COL_ARTIST, tr.artist or tr.albumartist)
         it.setText(COL_ALBUM, tr.album + (f" ({tr.year})" if tr.year and tr.album else "") if not tr.is_stream
@@ -472,11 +790,22 @@ class MainWindow(QMainWindow):
         playing = self.engine.cur is not None and tr.uid == self.engine.cur.uid
         f = QFont(self.view.font())
         f.setBold(playing)
-        for c in range(5):
+        for c in range(NCOLS):
             it.setFont(c, f)
-            it.setForeground(c, QColor("#8fb8ff") if playing else QColor(style.TEXT if c != COL_N else style.MUTED))
-        it.setIcon(COL_N, style.icon("fa6s.volume-high" if not self.engine.paused else "fa6s.pause", "#8fb8ff")
-                   if playing and not self.engine.stopped else style.icon("fa6s.music", "#00000000"))
+            it.setForeground(c, QColor(ACCENT_TEXT) if playing or (c == COL_N and qpos) else
+                             QColor(style.TEXT if c != COL_N else style.MUTED))
+        if playing and not self.engine.stopped:
+            icon = style.icon("fa6s.volume-high" if not self.engine.paused else "fa6s.pause", ACCENT_TEXT)
+        elif qpos:
+            icon = style.icon("fa6s.angles-right", ACCENT_TEXT)
+        else:
+            icon = style.icon("fa6s.music", "#00000000")
+        it.setIcon(COL_N, icon)
+        if qpos:
+            it.setToolTip(COL_N, t("queued_n", qpos))
+        fav = self.favs.has(tr)
+        it.setIcon(COL_FAV, style.icon("fa6s.star", STAR) if fav else style.icon("mdi6.star-outline", "#3a4152"))
+        it.setToolTip(COL_FAV, t("unfav") if fav else t("fav"))
 
     def _rebuild_list(self):
         self.view.setUpdatesEnabled(False)
@@ -497,6 +826,7 @@ class MainWindow(QMainWindow):
         n = len(self.pl.tracks)
         total = sum(tr.duration() for tr in self.pl.tracks)
         self.pl_count.setText(t("pl_count", n, fmt_time(total)) if n else "")
+        self.pl_title.setText(self.pl.name)
         self.empty.setVisible(n == 0)
         self.empty.resize(self.view.viewport().size())
         self._fit_number_column()
@@ -617,7 +947,7 @@ class MainWindow(QMainWindow):
     def _header_menu(self, pos):
         m = QMenu(self)
         hidden = set(self.cfg.get("hidden_cols") or [])
-        names = {"n": "#", "artist": t("col_artist"), "album": t("col_album"), "len": t("col_len")}
+        names = {"n": "#", "artist": t("col_artist"), "album": t("col_album"), "len": t("col_len"), "fav": "★"}
         for key, name in names.items():
             a = m.addAction(name)
             a.setCheckable(True)
@@ -654,13 +984,14 @@ class MainWindow(QMainWindow):
         return [it.data(0, UID) for it in self.view.selectedItems()]
 
     def remove_selected(self):
-        if self.search.hasFocus():
-            return
         uids = set(self._selected_uids())
         if not uids:
             return
         row = min(self.view.indexOfTopLevelItem(self.items[u]) for u in uids if u in self.items)
+        gone = [tr for tr in self.pl.tracks if tr.uid in uids]
         self.pl.remove(uids, self.engine.cur)
+        if any(self.engine.queue_pos(tr) for tr in gone):
+            self.engine.dequeue(gone)
         for u in uids:
             it = self.items.pop(u, None)
             if it is not None:
@@ -685,14 +1016,20 @@ class MainWindow(QMainWindow):
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if r != QMessageBox.Yes:
                 return
-        self.engine.stop()
-        self.engine.cur = None
+        if self.engine.queue:
+            self.engine.dequeue([tr for tr in self.pl.tracks if self.engine.queue_pos(tr)])
+        if self.engine.pl is self.pl:
+            self.engine.stop()
+            self.engine.cur = None
+            self.engine.stop_after = None
+            self._show_track(None)
         self.pl.clear()
         self._rebuild_list()
-        self._show_track(None)
 
     def jump_to_current(self):
         cur = self.engine.cur
+        if cur is not None and self.engine.pl is not self.pl and self.engine.pl in self.pls:
+            self.tabbar.setCurrentIndex(self.pls.index(self.engine.pl))
         it = self.items.get(cur.uid) if cur else None
         if it is not None:
             if it.isHidden():
@@ -707,6 +1044,19 @@ class MainWindow(QMainWindow):
         if it is not None:
             uid = it.data(0, UID)
             m.addAction(style.icon("fa6s.play"), t("play") + "\tEnter", lambda: self.play_uid(uid))
+            m.addAction(style.icon("fa6s.angles-right"), t("play_next") + "\tCtrl+Q",
+                        lambda: self.queue_selected(front=True))
+            m.addAction(style.icon("fa6s.list-ol"), t("add_queue") + "\tCtrl+Shift+Q",
+                        lambda: self.queue_selected(front=False))
+            sel_q = [tr for tr in self._selected_tracks() if self.engine.queue_pos(tr)]
+            if sel_q:
+                m.addAction(style.icon("fa6s.xmark"), t("unqueue"), lambda q=sel_q: self.engine.dequeue(q))
+            trk = self.pl.by_uid(uid)
+            fav = trk is not None and self.favs.has(trk)
+            m.addAction(style.icon("fa6s.star", STAR if not fav else style.MUTED),
+                        (t("unfav") if fav else t("fav")) + "\tCtrl+D", self.toggle_fav_selected)
+            m.addAction(style.icon("fa6s.pen"), t("edit_tags") + "\tF2", self.edit_tags_selected)
+            m.addSeparator()
             m.addAction(style.icon("fa6s.trash-can"), t("remove") + "\tDel", self.remove_selected)
             tr = self.pl.by_uid(uid)
             if tr is not None and os.path.exists(tr.path):
@@ -717,9 +1067,9 @@ class MainWindow(QMainWindow):
         if it is not None:
             uid = it.data(0, UID)
             a = m.addAction(style.icon("fa6s.circle-stop"), t("stop_after_this"),
-                            lambda u=uid: self.set_stop_after(None if self.pl.stop_after == u else u))
+                            lambda u=uid: self.set_stop_after(None if self.engine.stop_after == u else u))
             a.setCheckable(True)
-            a.setChecked(self.pl.stop_after == uid)
+            a.setChecked(self.engine.stop_after == uid)
         sm = m.addMenu(style.icon("fa6s.arrow-down-a-z"), t("sort"))
         for key in ("path", "artist", "album", "title", "length"):
             sm.addAction(t("sort_" + key), lambda k=key: self.sort_playlist(k))
@@ -727,7 +1077,8 @@ class MainWindow(QMainWindow):
         m.addAction(style.icon("fa6s.trash-can"), t("clear_pl"), self.clear_playlist)
         cm = m.addMenu(style.icon("fa6s.table-columns"), t("columns"))
         hidden = set(self.cfg.get("hidden_cols") or [])
-        for key, name in (("n", "#"), ("artist", t("col_artist")), ("album", t("col_album")), ("len", t("col_len"))):
+        for key, name in (("n", "#"), ("artist", t("col_artist")), ("album", t("col_album")), ("len", t("col_len")),
+                          ("fav", "★")):
             a = cm.addAction(name)
             a.setCheckable(True)
             a.setChecked(key not in hidden)
@@ -853,7 +1204,9 @@ class MainWindow(QMainWindow):
         tr = self.pl.by_uid(uid) if uid is not None else None
         if tr is None:
             return
-        if self.pl.shuffle and self.engine.cur is None:
+        if self.engine.pl is not self.pl:                  # another tab starts playing
+            self._set_playing_pl(self.pl, tr)
+        elif self.pl.shuffle and self.engine.cur is None:
             self.pl.reshuffle(tr)
         self.engine.play(tr, offset, paused)
 
@@ -874,7 +1227,7 @@ class MainWindow(QMainWindow):
         self._thumb_update()
 
     def next(self):
-        nxt = self.pl.next_after(self.engine.cur, auto=False)
+        nxt = self.engine.next_track(self.engine.cur, auto=False)
         if nxt is not None:
             self.engine.play(nxt)
 
@@ -885,7 +1238,7 @@ class MainWindow(QMainWindow):
                 and not self.engine.cur.is_stream:
             self.engine.seek(0)
             return
-        prv = self.pl.prev_before(self.engine.cur)
+        prv = self.engine.prev_track(self.engine.cur)
         if prv is not None:
             self.engine.play(prv)
 
@@ -909,8 +1262,9 @@ class MainWindow(QMainWindow):
         self.l_vol.setText(f"{v}%")
 
     def toggle_shuffle(self):
-        on = not self.pl.shuffle
-        self.pl.set_shuffle(on, self.engine.cur)
+        on = not self.engine.pl.shuffle
+        for p in self.pls:
+            p.set_shuffle(on, self.engine.cur if p is self.engine.pl else None)
         self.cfg["shuffle"] = on
         self._sync_mode_buttons()
         self.engine.requeue()
@@ -918,8 +1272,9 @@ class MainWindow(QMainWindow):
         self.toast.show_text(t("shuffle_on") if on else t("shuffle_off"), 1100)
 
     def cycle_repeat(self):
-        nxt = {"off": "all", "all": "one", "one": "off"}[self.pl.repeat]
-        self.pl.repeat = nxt
+        nxt = {"off": "all", "all": "one", "one": "off"}[self.engine.pl.repeat]
+        for p in self.pls:
+            p.repeat = nxt
         self.cfg["repeat"] = nxt
         self._sync_mode_buttons()
         self.engine.requeue()
@@ -927,8 +1282,8 @@ class MainWindow(QMainWindow):
         self.toast.show_text(t("repeat_" + nxt), 1100)
 
     def _sync_mode_buttons(self):
-        self.b_shuffle.setObjectName("on" if self.pl.shuffle else "ctl")
-        rep = self.pl.repeat
+        self.b_shuffle.setObjectName("on" if self.engine.pl.shuffle else "ctl")
+        rep = self.engine.pl.repeat
         self.b_repeat.setObjectName("ctl" if rep == "off" else "on")
         self.b_repeat.setIcon(style.icon({"off": "mdi6.repeat-off", "all": "mdi6.repeat",
                                           "one": "mdi6.repeat-once"}[rep], "#ffffff"))
@@ -957,6 +1312,9 @@ class MainWindow(QMainWindow):
             if prev_uid != tr.uid:
                 self._notify(tr)
                 self._load_wave(tr)
+                self._load_lyrics(tr)
+                self.history.add(tr)
+                self._tab_icons()
         self._show_track(tr)
         self._dirty = True
 
@@ -971,7 +1329,7 @@ class MainWindow(QMainWindow):
         self._wave_key = key
         self.seekbar.set_peaks(None, loading=True)
         self.waves.request(tr)
-        self.waves.prefetch(self.pl.next_after(tr, auto=True))         # ready when it starts
+        self.waves.prefetch(self.engine.next_track(tr, auto=True))         # ready when it starts
 
     def _on_wave(self, key: str, peaks: bytes):
         if key == self._wave_key:
@@ -980,6 +1338,7 @@ class MainWindow(QMainWindow):
     def _show_track(self, tr: Track | None):
         if tr is None:
             self._load_wave(None)
+            self._load_lyrics(None)
             self.t_title.setText(APP_TITLE)
             self.t_artist.setText(t("idle_sub"))
             self.t_album.setText("")
@@ -1013,6 +1372,14 @@ class MainWindow(QMainWindow):
         self._render_format()
         self._set_mini(tr)
         self._update_next_label()
+        if self.smtc is not None:
+            try:
+                no = int(tr.number or 0)
+            except ValueError:
+                no = 0
+            self.smtc.set_track(tr.display_title(), tr.artist or tr.albumartist, tr.album,
+                                getattr(self, "_cover_data", b"") or None, no)
+            self._smtc_timeline(force=True)
 
     def _show_stream(self, tr: Track):
         """Internet radio: the song on air (ICY) as the title, the station below."""
@@ -1035,6 +1402,8 @@ class MainWindow(QMainWindow):
             elide(self.mini.artist, tr.display_title(), 300)
         self.l_dur.setText(t("live"))
         self._update_next_label()
+        if self.smtc is not None:
+            self.smtc.set_track(icy or tr.display_title(), tr.display_title() if icy else t("radio"), t("radio"))
 
     def _on_icy(self, title: str):
         cur = self.engine.cur
@@ -1052,10 +1421,10 @@ class MainWindow(QMainWindow):
         if cur is not None and cur.is_stream:
             self.t_next.setText("")
             return
-        if cur is not None and not self.engine.stopped and self.pl.stop_after == cur.uid:
+        if cur is not None and not self.engine.stopped and self.engine.stop_after == cur.uid:
             self.t_next.setText(t("up_next_stop"))
             return
-        nxt = self.pl.next_after(cur, auto=True) if cur is not None and not self.engine.stopped else None
+        nxt = self.engine.next_track(cur, auto=True) if cur is not None and not self.engine.stopped else None
         self.t_next.setText(t("up_next", nxt.display()) if nxt is not None and nxt.uid != cur.uid else
                             (t("up_next_repeat") if nxt is not None else ""))
 
@@ -1075,6 +1444,10 @@ class MainWindow(QMainWindow):
             self._refresh_item(cur.uid)
             self.dirty_timer.start()
         self.seekbar.set_state(pos, dur)
+        if self.smtc is not None:
+            self._smtc_timeline()
+        if self.lyrics.isVisible():
+            self.lyrics.set_pos(pos)
         self.l_pos.setText(fmt_time(pos))
         self.l_dur.setText("−" + fmt_time(max(0.0, dur - pos)) if self.cfg.get("time_remaining") and dur
                            else fmt_time(dur))
@@ -1092,6 +1465,51 @@ class MainWindow(QMainWindow):
             self._refresh_item(self.engine.cur.uid)
         self._thumb_update()
         self._update_next_label()
+        self._smtc_status()
+
+    # ── Windows media controls (the card over the volume flyout / on the lock screen) ──
+    def _setup_smtc(self):
+        want = bool(self.cfg.get("smtc", True)) and winint.IS_WIN
+        if want and self.smtc is None:
+            from .smtc import Smtc
+            self.smtc = Smtc()
+            self.smtc.button.connect(self._smtc_button)
+            self.smtc.seek.connect(self.engine.seek)
+            if self.engine.cur is not None:
+                self._show_track(self.engine.cur)
+                self._smtc_status()
+        elif not want and self.smtc is not None:
+            self.smtc.stop()
+            self.smtc = None
+
+    def _smtc_button(self, name: str):
+        if name == "play":
+            if self.engine.cur is None or self.engine.stopped or self.engine.paused:
+                self.toggle_pause()
+        elif name == "pause":
+            self.engine.set_paused(True)
+        else:
+            self.media_action(name)
+
+    def _smtc_status(self):
+        if self.smtc is None:
+            return
+        e = self.engine
+        self.smtc.set_status("closed" if e.cur is None else "stopped" if e.stopped else
+                             "paused" if e.paused else "playing")
+        self._smtc_timeline(force=True)
+
+    def _smtc_timeline(self, force: bool = False):
+        """The position on the card: on every change of state, else every 5 s (as Windows asks)."""
+        if self.smtc is None or self.engine.cur is None or self.engine.cur.is_stream:
+            return
+        pos, dur = self._last_pos
+        now = time.monotonic()
+        t0, p0 = self._smtc_sent
+        expect = p0 + (now - t0 if not self.engine.paused else 0)
+        if force or now - t0 > 5 or abs(pos - expect) > 2:
+            self._smtc_sent = (now, pos)
+            self.smtc.set_timeline(pos, dur or self.engine.cur.duration())
 
     def _on_format(self, info: dict):
         self.fmt_info = info
@@ -1126,8 +1544,9 @@ class MainWindow(QMainWindow):
         self.t_format.show()
 
     def _on_finished(self):
-        if self.pl.stop_after is not None:
-            self.pl.stop_after = None
+        self._smtc_status()
+        if self.engine.stop_after is not None:
+            self.engine.stop_after = None
             self.toast.show_text(t("stopped_after"), 2000)
         if self.engine.cur is not None:
             self._refresh_item(self.engine.cur.uid)
@@ -1136,7 +1555,7 @@ class MainWindow(QMainWindow):
 
     # ── stop after, sleep timer, time label ───────────────────
     def set_stop_after(self, uid: int | None):
-        self.pl.stop_after = uid
+        self.engine.stop_after = uid
         self.engine.requeue()
         self._update_next_label()
         tr = self.pl.by_uid(uid) if uid is not None else None
@@ -1146,7 +1565,7 @@ class MainWindow(QMainWindow):
         cur = self.engine.cur
         if cur is None:
             return
-        self.set_stop_after(None if self.pl.stop_after == cur.uid else cur.uid)
+        self.set_stop_after(None if self.engine.stop_after == cur.uid else cur.uid)
 
     def set_sleep(self, minutes: int):
         """0 = off; the music fades out and pauses when the time is up."""
@@ -1302,6 +1721,18 @@ class MainWindow(QMainWindow):
         m.addAction(style.icon("fa6s.tower-broadcast"), t("add_url") + "\tCtrl+U", self.add_url_dialog)
         m.addAction(style.icon("fa6s.folder-open"), t("load_pl") + "\tCtrl+L", self.load_playlist_dialog)
         m.addAction(style.icon("fa6s.floppy-disk"), t("save_pl") + "\tCtrl+S", self.save_playlist_dialog)
+        m.addAction(style.icon("fa6s.plus"), t("new_tab") + "\tCtrl+N", lambda: self.new_tab())
+        m.addSeparator()
+        m.addAction(style.icon("fa6s.star", STAR), t("favorites") + "\tCtrl+B",
+                    lambda: self.open_library_tab("favorites"))
+        m.addAction(style.icon("fa6s.clock-rotate-left"), t("history") + "\tCtrl+H",
+                    lambda: self.open_library_tab("history"))
+        if self.engine.queue:
+            qm = m.addMenu(style.icon("fa6s.list-ol"), t("queue_n", len(self.engine.queue)))
+            for i, tr in enumerate(self.engine.queue[:15]):
+                qm.addAction(f"{i + 1}. {tr.display()}"[:80], lambda x=tr: self._play_track(x))
+            qm.addSeparator()
+            qm.addAction(style.icon("fa6s.xmark"), t("queue_clear"), lambda: self.engine.dequeue(None))
         m.addSeparator()
         snd = m.addMenu(style.icon("mdi6.surround-sound"), t("sound"))
         g = QActionGroup(snd)
@@ -1339,7 +1770,7 @@ class MainWindow(QMainWindow):
         cur = self.engine.cur
         a = m.addAction(style.icon("fa6s.circle-stop"), t("stop_after_cur") + "\tCtrl+Shift+E", self.toggle_stop_after)
         a.setCheckable(True)
-        a.setChecked(cur is not None and self.pl.stop_after == cur.uid)
+        a.setChecked(cur is not None and self.engine.stop_after == cur.uid)
         a.setEnabled(cur is not None)
         left = self._sleep_left()
         sl = m.addMenu(style.icon("fa6s.moon"), t("sleep") + (f"  ({fmt_time(left)})" if left else ""))
@@ -1390,7 +1821,9 @@ class MainWindow(QMainWindow):
             config.save(self.cfg)
             self._apply_view_options()
             self._setup_tray()
+            self._setup_smtc()
             self.seekbar.set_wave_enabled(bool(self.cfg.get("waveform", True)))
+            self._load_lyrics(self.engine.cur)
             self._wave_key = ""
             self._load_wave(self.engine.cur)
             self._on_pos(*self._last_pos)
@@ -1456,8 +1889,13 @@ class MainWindow(QMainWindow):
     def save_session(self):
         cur = self.engine.cur
         pos, _ = self._last_pos
-        s = {"tracks": [tr.to_dict() for tr in self.pl.tracks],
-             "current": self.pl.index_of(cur),
+        self.pl.scroll = self.view.verticalScrollBar().value()
+        play_pl = self.engine.pl if self.engine.pl in self.pls else self.pl
+        s = {"tabs": [{"name": p.name, "kind": p.kind, "scroll": p.scroll,
+                       "tracks": [tr.to_dict() for tr in p.tracks] if not p.kind else []} for p in self.pls],
+             "view": self.pls.index(self.pl),
+             "playing_tab": self.pls.index(play_pl),
+             "current": play_pl.index_of(cur),
              "position": round(pos, 1) if cur is not None and not self.engine.stopped and not cur.is_stream else 0.0,
              "playing": cur is not None and not self.engine.stopped and not self.engine.paused}
         config.save_session(s)
@@ -1467,20 +1905,35 @@ class MainWindow(QMainWindow):
         if not self.cfg.get("resume", True):
             return False
         s = config.load_session()
-        tracks = [Track.from_dict(d) for d in s.get("tracks", []) if isinstance(d, dict) and d.get("path")]
-        if not tracks:
+        tabs = s.get("tabs")
+        if not isinstance(tabs, list) or not tabs:                     # 1.0–1.3: one playlist
+            tabs = [{"name": t("playlist"), "tracks": s.get("tracks", [])}]
+            s["playing_tab"] = s["view"] = 0
+        pls = []
+        for d in tabs:
+            if not isinstance(d, dict):
+                continue
+            p = self._new_pl(str(d.get("name") or t("playlist")), str(d.get("kind") or ""))
+            p.scroll = int(d.get("scroll", 0) or 0)
+            if p.kind:
+                self._fill_library(p)
+            else:
+                p.add([Track.from_dict(x) for x in d.get("tracks", []) if isinstance(x, dict) and x.get("path")])
+            pls.append(p)
+        if not pls or not any(p.tracks for p in pls) and len(pls) == 1:
             return False
-        self.pl.add(tracks)
-        if self.pl.shuffle:
-            i = int(s.get("current", -1))
-            self.pl.reshuffle(tracks[i] if 0 <= i < len(tracks) else None)
-        self.tags.add(tracks)
-        self._rebuild_list()
+        self._set_tabs(pls, max(0, min(int(s.get("view", 0) or 0), len(pls) - 1)))
+        play_pl = pls[max(0, min(int(s.get("playing_tab", 0) or 0), len(pls) - 1))]
+        tracks = play_pl.tracks
         i = int(s.get("current", -1))
+        self._set_playing_pl(play_pl, tracks[i] if 0 <= i < len(tracks) else None)
+        for p in pls:
+            self.tags.add(p.tracks)
         if 0 <= i < len(tracks) and (tracks[i].is_stream or os.path.exists(tracks[i].path)):
             play = bool(self.cfg.get("resume_play")) and bool(s.get("playing"))
             self.engine.play(tracks[i], float(s.get("position", 0) or 0), paused=not play)
-            self.jump_to_current()
+            if play_pl is self.pl:
+                self.jump_to_current()
         return True
 
     def restore_geometry(self):
@@ -1626,6 +2079,8 @@ class MainWindow(QMainWindow):
         config.save(self.cfg)
         self.save_timer.stop()
         self.tags.stop()
+        if self.smtc is not None:
+            self.smtc.stop()
         self.waves.stop()
         winint.unregister_media_keys(int(self.winId()), self._hotkeys)
         self.engine.shutdown()

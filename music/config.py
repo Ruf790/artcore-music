@@ -19,6 +19,7 @@ DEFAULTS = {
     "close_to_tray": False,         # ✕ hides the window to the tray
     "notify":        False,         # a tray notification on every new track (when the window is not active)
     "tray_hint_shown": False,
+    "smtc":          True,          # Windows media controls: the card with the cover over the volume flyout
     "repeat":        "off",         # off | all | one
     "shuffle":       False,
     # sound
@@ -42,7 +43,7 @@ DEFAULTS = {
     "search_path":   True,          # the search also looks in folder names
     "search_clear_on_play": False,  # playing a found track clears the search
     "row_size":      "normal",      # compact | normal | large
-    "hidden_cols":   [],            # playlist columns switched off: n | artist | album | len
+    "hidden_cols":   [],            # playlist columns switched off: n | artist | album | len | fav
     "confirm_clear": True,
     "skip_dups":     True,          # files already in the playlist are not added again
     # playback
@@ -51,7 +52,9 @@ DEFAULTS = {
     "volume_step":   5,
     "prev_restart":  3,             # ⏮ after this many seconds restarts the track (0 = always the previous one)
     "time_remaining": False,
-    "waveform":      True,          # the seek bar shows the waveform of the track        # the right time label shows −remaining
+    "waveform":      True,
+    "lyrics":        True,          # look for lyrics (.lrc / .txt next to the track, or in its tags)
+    "lyrics_show":   True,          # the lyrics panel under the cover          # the seek bar shows the waveform of the track        # the right time label shows −remaining
     # window
     "media_keys":    True,          # global ⏮ ⏯ ⏭ keys of the keyboard
     "check_updates": True,
@@ -129,7 +132,7 @@ def load() -> dict:
         cfg["row_size"] = "normal"
     if not isinstance(cfg.get("hidden_cols"), list):
         cfg["hidden_cols"] = []
-    cfg["hidden_cols"] = [c for c in cfg["hidden_cols"] if c in ("n", "artist", "album", "len")]
+    cfg["hidden_cols"] = [c for c in cfg["hidden_cols"] if c in ("n", "artist", "album", "len", "fav")]
     for key, lo, hi in (("seek_step", 1, 60), ("seek_step_big", 5, 600), ("volume_step", 1, 20),
                         ("prev_restart", 0, 30), ("fade_pause", 0, 2000), ("samplerate", 0, 384000)):
         try:

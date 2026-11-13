@@ -147,3 +147,15 @@ def test_pls_and_radio_playlists(tmp_path):
     write_m3u(str(out), t)
     back = expand([str(out)])
     assert [(x.path, x.title) for x in back] == [(x.path, x.title) for x in t]
+
+
+def test_lrc_parse():
+    from music.lyrics import parse
+    lyr = parse("﻿[ar:Someone]\n[ti:Song]\n[offset:+500]\n[00:01.00]First\n[00:03.50][00:10.00]Chorus\n"
+                "[00:05.2]<00:05.20>Wo<00:05.60>rds\n\n[01:00]End")
+    assert lyr.synced and lyr.lines == ["First", "Chorus", "Words", "Chorus", "End"]
+    assert [round(x, 2) for x in lyr.times] == [0.5, 3.0, 4.7, 9.5, 59.5]
+    assert lyr.index_at(0.1) == -1 and lyr.index_at(3.2) == 1 and lyr.index_at(100) == 4
+    plain = parse("Line one\nLine two\n")
+    assert not plain.synced and plain.lines == ["Line one", "Line two"]
+    assert parse("   \n") is None

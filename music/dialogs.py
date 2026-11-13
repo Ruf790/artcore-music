@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
                                QGridLayout, QGroupBox, QHBoxLayout, QLabel, QProgressBar, QPushButton, QSlider,
-                               QSpinBox, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
+                               QSpinBox, QTabWidget, QTextBrowser, QVBoxLayout, QWidget, QLineEdit)
 
 from . import APP_TITLE, VERSION, audio, style
 from .i18n import t
@@ -41,10 +41,10 @@ class SettingsDialog(QDialog):
     """General / playlist / controls. Sound has its own dialog (Ctrl+P)."""
     CHECKS = {
         "general":  [("grp_start", ("resume", "resume_play", "single_window", "check_updates")),
-                     ("grp_window", ("on_top", "media_keys", "tray", "close_to_tray", "notify"))],
+                     ("grp_window", ("on_top", "media_keys", "smtc", "tray", "close_to_tray", "notify"))],
         "playlist": [("grp_search", ("search_path", "search_clear_on_play")),
                      ("tab_playlist", ("follow_playing", "skip_dups", "confirm_clear"))],
-        "playback": [("grp_look", ("waveform", "time_remaining"))],
+        "playback": [("grp_look", ("waveform", "time_remaining", "lyrics"))],
     }
 
     def __init__(self, cfg: dict, parent=None):
@@ -92,7 +92,8 @@ class SettingsDialog(QDialog):
         cols = QHBoxLayout()
         self.cols: dict[str, QCheckBox] = {}
         hidden = set(cfg.get("hidden_cols") or [])
-        for key, name in (("n", "#"), ("artist", t("col_artist")), ("album", t("col_album")), ("len", t("col_len"))):
+        for key, name in (("n", "#"), ("artist", t("col_artist")), ("album", t("col_album")), ("len", t("col_len")),
+                          ("fav", "★")):
             cb = QCheckBox(name)
             cb.setChecked(key not in hidden)
             self.cols[key] = cb
@@ -458,7 +459,9 @@ KEYS = [
     ("Ctrl + ← / →", "k_prevnext"), ("Ctrl + ↑ / ↓,  + / −", "k_volume"), ("M", "k_mute"), ("S", "k_shuffle"),
     ("R", "k_repeat"), ("E", "k_eq"), ("Ctrl + P", "k_sound"), ("Ctrl + T", "k_test"), ("Ctrl + M", "k_mini"),
     ("T", "k_ontop"), ("Ctrl + F", "k_find"), ("Ctrl + J", "k_jump"), ("Ctrl + Shift + E", "k_stop_after"), ("Del", "k_delete"),
-    ("Ctrl + O", "k_open"), ("Ctrl + Shift + O", "k_open_folder"), ("Ctrl + U", "k_url"), ("Ctrl + L", "k_load_pl"),
+    ("Ctrl + O", "k_open"), ("Ctrl + Shift + O", "k_open_folder"), ("Ctrl + U", "k_url"),
+    ("Ctrl + N / W / Tab", "k_tabs"), ("Ctrl + Q / Shift + Q", "k_queue"), ("Ctrl + D", "k_fav"),
+    ("Ctrl + B / H", "k_library"), ("F2", "k_tags"), ("L", "k_lyrics"), ("Ctrl + L", "k_load_pl"),
     ("Ctrl + S", "k_save_pl"), ("Ctrl + ,", "k_settings"), ("⏮ ⏯ ⏭ ⏹", "k_media"), ("F1", "k_keys"),
 ]
 
@@ -641,3 +644,120 @@ class UpdateDialog(QDialog):
             return
         self.path = path
         self.accept()
+
+
+class TagEditorDialog(QDialog):
+    """Tags of one or many files. With many: a field shows the common value, or stays empty with «different»
+    and is written only if you type in it. «From the file name» fills the tags of every file from its name;
+    «Number in order» numbers the files 1, 2, 3… in the order of the list."""
+    FIELDS = ("title", "artist", "album", "albumartist", "year", "track", "genre")
+
+    def __init__(self, tracks: list, parent=None):
+        super().__init__(parent)
+        from . import meta
+        self.tracks = tracks
+        self.changed: list = []
+        self.errors: list[str] = []
+        self.guess: dict[int, dict] = {}            # uid → tags from the file name
+        self.setWindowTitle(t("edit_tags").rstrip("…") + " — " + APP_TITLE)
+        self.setMinimumWidth(580)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 18, 22, 16)
+        lay.addWidget(_head(t("edit_tags").rstrip("…")))
+        many = len(tracks) > 1
+        what = QLabel(t("tags_files", len(tracks)) if many else tracks[0].path)
+        what.setObjectName("hint")
+        what.setWordWrap(True)
+        what.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(what)
+        self.cur = {}
+        for tr in tracks:
+            try:
+                tg = meta.read(tr.path)
+            except Exception:
+                tg = meta.Tags()
+            self.cur[tr.uid] = {f: getattr(tg, f if f != "track" else "track") or "" for f in self.FIELDS}
+        form = QFormLayout()
+        form.setVerticalSpacing(8)
+        self.edits: dict[str, QLineEdit] = {}
+        self.touched: set[str] = set()
+        for f in self.FIELDS:
+            e = QLineEdit()
+            vals = {self.cur[tr.uid][f] for tr in tracks}
+            if len(vals) == 1:
+                e.setText(vals.pop())
+            else:
+                e.setPlaceholderText(t("tags_different"))
+            if f in ("year", "track"):
+                e.setMaximumWidth(120)
+            e.textEdited.connect(lambda _s, k=f: self.touched.add(k))
+            self.edits[f] = e
+            form.addRow(t("tag_" + f), e)
+        lay.addLayout(form)
+
+        box = QGroupBox(t("tags_from_name"))
+        h = QHBoxLayout(box)
+        self.pattern = QComboBox()
+        for key in meta.FILENAME_PATTERNS:
+            self.pattern.addItem(t("pat_" + key), key)
+        h.addWidget(self.pattern, 1)
+        b = QPushButton(t("tags_fill"))
+        b.clicked.connect(self._from_name)
+        h.addWidget(b)
+        lay.addWidget(box)
+        self.number = QCheckBox(t("tags_number"))
+        self.number.setVisible(many)
+        lay.addWidget(self.number)
+        self.preview = QLabel()
+        self.preview.setObjectName("hint")
+        self.preview.setWordWrap(True)
+        lay.addWidget(self.preview)
+        lay.addWidget(_hint(t("tags_hint")))
+        lay.addWidget(_buttons(self))
+
+    def _from_name(self):
+        from . import meta
+        key = self.pattern.currentData()
+        self.guess = {}
+        for tr in self.tracks:
+            g = meta.from_filename(tr.path, key)
+            if g:
+                self.guess[tr.uid] = g
+        n = len(self.guess)
+        if len(self.tracks) == 1 and self.guess:
+            for f, v in self.guess[self.tracks[0].uid].items():
+                self.edits[f].setText(v)
+                self.touched.add(f)
+            self.guess = {}
+        first = next(iter(self.guess.values()), None)
+        sample = " · ".join(f"{t('tag_' + k)}: {v}" for k, v in first.items()) if first else ""
+        self.preview.setText(t("tags_guessed", n, len(self.tracks)) + (f"\n{sample}" if sample else ""))
+
+    def values_for(self, i: int, tr) -> dict:
+        vals = dict(self.guess.get(tr.uid, {}))
+        for f in self.touched:
+            vals[f] = self.edits[f].text()
+        if self.number.isChecked():
+            vals["track"] = str(i + 1)
+        return vals
+
+    def accept(self):
+        from . import meta
+        from .playlist import fill_tags
+        for i, tr in enumerate(self.tracks):
+            vals = self.values_for(i, tr)
+            vals = {k: v for k, v in vals.items() if v != self.cur[tr.uid].get(k, "")}
+            if not vals:
+                continue
+            try:
+                meta.write(tr.path, vals)
+            except Exception as e:
+                self.errors.append(f"{os.path.basename(tr.path)}: {e}")
+                continue
+            tr.tagged = False
+            try:
+                fill_tags(tr)
+            except Exception:
+                tr.tagged = True
+            self.changed.append(tr)
+        super().accept()

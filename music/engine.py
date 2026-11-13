@@ -216,6 +216,7 @@ class Engine(QObject):
     finished = Signal()                       # the end of the playlist
     error = Signal(str)
     stream_title = Signal(str)                # internet radio: what is on air now (ICY), "" = unknown
+    queue_changed = Signal()                  # the "play next" queue changed
 
     TICK_MS = 40
 
@@ -223,7 +224,11 @@ class Engine(QObject):
         super().__init__()
         self.mpvmod = mpvmod
         self.cfg = cfg
-        self.pl = playlist
+        self.pl = playlist                    # the playlist being played (with tabs: maybe not the one shown)
+        self.queue: list[Track] = []          # "play next": these go first, in order, from any playlist
+        self.ctx: Track | None = None         # the playlist track the queue was entered from
+        self._from_queue = False              # the current track came from the queue
+        self.stop_after: int | None = None    # uid: stop after this track
         self.decks = [Deck(mpvmod, cfg, "A")]
         self.active = 0
         self.cur: Track | None = None
@@ -283,7 +288,7 @@ class Engine(QObject):
             self.icy = ""
             self.stream_title.emit("")
         self.deck.load(track, offset, paused)
-        self.track_changed.emit(track)
+        self._emit_track(track)
         self.paused_changed.emit(paused)
 
     def toggle_pause(self):
@@ -462,12 +467,60 @@ class Engine(QObject):
             return 0.0
         return x
 
+    # ── what comes next: stop-after, the queue, then the playlist ──
+    def next_track(self, t: Track | None, auto: bool = True) -> Track | None:
+        if t is not None and auto and self.stop_after is not None and t.uid == self.stop_after:
+            return None
+        if self.queue:
+            return self.queue[0]
+        base = self.ctx if self._from_queue and self.ctx is not None else t   # after the queue: the playlist
+        return self.pl.next_after(base, auto=auto)                             # goes on from where it was
+
+    def prev_track(self, t: Track | None) -> Track | None:
+        base = self.ctx if self._from_queue and self.ctx is not None else t
+        return self.pl.prev_before(base)
+
+    def enqueue(self, tracks: list[Track], front: bool = False):
+        """Play next (front) or at the end of the queue. A track already queued moves."""
+        ids = {id(x) for x in tracks}
+        self.queue = [x for x in self.queue if id(x) not in ids]
+        self.queue = (list(tracks) + self.queue) if front else (self.queue + list(tracks))
+        self.queue_changed.emit()
+        self.requeue()
+
+    def dequeue(self, tracks: list[Track] | None = None):
+        """Take these out of the queue (None: clear it)."""
+        if tracks is None:
+            self.queue = []
+        else:
+            ids = {id(x) for x in tracks}
+            self.queue = [x for x in self.queue if id(x) not in ids]
+        self.queue_changed.emit()
+        self.requeue()
+
+    def queue_pos(self, t: Track) -> int:
+        """1-based place in the queue, 0 = not queued."""
+        return next((i + 1 for i, x in enumerate(self.queue) if x is t), 0)
+
+    def _emit_track(self, tr: Track):
+        if self.queue and tr is self.queue[0]:
+            self.queue.pop(0)
+            self._from_queue = True
+            self.queue_changed.emit()
+        else:
+            if any(x is tr for x in self.queue):         # played directly: no need to play it again
+                self.queue = [x for x in self.queue if x is not tr]
+                self.queue_changed.emit()
+            self._from_queue = False
+            self.ctx = tr
+        self.track_changed.emit(tr)
+
     def _gapless_next(self) -> Track | None:
         """What to queue in mpv after the current file (None: nothing, or crossfade / CUE takes care of it)."""
         t = self.cur
         if t is None or t.end is not None or t.is_stream:   # a CUE range: the boundary is handled in _on_pos
             return None
-        nxt = self.pl.next_after(t, auto=True)
+        nxt = self.next_track(t, auto=True)
         if nxt is None or self._xfade_len(t, nxt) > 0:
             return None
         return nxt
@@ -475,7 +528,7 @@ class Engine(QObject):
     def _advance_virtual(self, nxt: Track):
         """The next CUE track of the same image: nothing to load."""
         self.cur = nxt
-        self.track_changed.emit(nxt)
+        self._emit_track(nxt)
         self.requeue()
 
     def _start_crossfade(self, nxt: Track, length: float):
@@ -488,7 +541,7 @@ class Engine(QObject):
         new.load(nxt)
         self.fade = {"old": old, "t0": time.monotonic(), "len": length}
         self.fade_timer.start()
-        self.track_changed.emit(nxt)
+        self._emit_track(nxt)
 
     def _fade_tick(self):
         f = self.fade
@@ -526,7 +579,7 @@ class Engine(QObject):
             d.queued = None
             if d is self.deck:
                 self.cur = d.track
-                self.track_changed.emit(self.cur)
+                self._emit_track(self.cur)
         d.loaded_at = time.monotonic()
         if d is self.deck:
             self._errors = 0
@@ -549,7 +602,7 @@ class Engine(QObject):
             self._errors += 1
             name = os.path.basename(d.track.path) if d.track else ""
             self.error.emit(f"{name}: mpv error {err}")
-            nxt = self.pl.next_after(self.cur, auto=False) if self.cur else None
+            nxt = self.next_track(self.cur, auto=False) if self.cur else None
             if nxt is not None and self._errors < max(3, len(self.pl.tracks)):
                 QTimer.singleShot(150, lambda: self.play(nxt))
             else:
@@ -559,7 +612,7 @@ class Engine(QObject):
             return
         if self.fade:
             return
-        nxt = self.pl.next_after(self.cur, auto=True) if self.cur else None
+        nxt = self.next_track(self.cur, auto=True) if self.cur else None
         if nxt is not None:
             self.play(nxt)
         else:
@@ -630,7 +683,7 @@ class Engine(QObject):
             return
         # the end of a CUE range
         if t.end is not None and p >= t.end - 0.02:
-            nxt = self.pl.next_after(t, auto=True)
+            nxt = self.next_track(t, auto=True)
             if nxt is None:
                 self.stop()
                 self.finished.emit()
@@ -642,7 +695,7 @@ class Engine(QObject):
             return
         # crossfade into the next track
         if self.deck.queued is None and dur and not self.paused:
-            nxt = self.pl.next_after(t, auto=True)
+            nxt = self.next_track(t, auto=True)
             x = self._xfade_len(t, nxt)
             if x > 0 and nxt is not None and dur > 2 * x and (nxt.duration() == 0 or nxt.duration() > x) \
                     and dur - rel <= x:
