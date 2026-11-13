@@ -3,7 +3,7 @@
 ; Expects the PyInstaller output in dist\ArtCoreMusic\.
 
 #define AppName      "ArtCore Music"
-#define AppVersion   "1.2.0"
+#define AppVersion   "1.3.0"
 #define AppPublisher "ArtCore"
 #define AppURL       "https://github.com/Ruf790/artcore-music"
 #define AppExe       "ArtCoreMusic.exe"
@@ -51,8 +51,8 @@ Name: "en"; MessagesFile: "compiler:Default.isl"
 [CustomMessages]
 ru.GroupIntegration=Интеграция с Windows:
 en.GroupIntegration=Windows integration:
-ru.OpenWith=Добавить в «Открыть с помощью» для аудиофайлов, .cue и .m3u
-en.OpenWith=Add to "Open with" for audio files, .cue and .m3u
+ru.OpenWith=Добавить в «Открыть с помощью» для аудиофайлов, .cue, .m3u и .pls
+en.OpenWith=Add to "Open with" for audio files, .cue, .m3u and .pls
 ru.FolderMenu=Пункты «Воспроизвести / Добавить в ArtCore Music» в меню папок
 en.FolderMenu="Play / Add to ArtCore Music" in the folder menu
 ru.AudioFile=Аудиофайл
@@ -205,6 +205,9 @@ Root: HKA; Subkey: "{#CapKey}\FileAssociations"; ValueType: string; ValueName: "
 Root: HKA; Subkey: "Software\Classes\.m3u8\OpenWithProgids"; ValueType: string; ValueName: "{#ProgIdList}"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
 Root: HKA; Subkey: "Software\Classes\Applications\{#AppExe}\SupportedTypes"; ValueType: string; ValueName: ".m3u8"; ValueData: ""; Tasks: openwith
 Root: HKA; Subkey: "{#CapKey}\FileAssociations"; ValueType: string; ValueName: ".m3u8"; ValueData: "{#ProgIdList}"; Tasks: openwith
+Root: HKA; Subkey: "Software\Classes\.pls\OpenWithProgids"; ValueType: string; ValueName: "{#ProgIdList}"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
+Root: HKA; Subkey: "Software\Classes\Applications\{#AppExe}\SupportedTypes"; ValueType: string; ValueName: ".pls"; ValueData: ""; Tasks: openwith
+Root: HKA; Subkey: "{#CapKey}\FileAssociations"; ValueType: string; ValueName: ".pls"; ValueData: "{#ProgIdList}"; Tasks: openwith
 Root: HKA; Subkey: "Software\Classes\.cue\OpenWithProgids"; ValueType: string; ValueName: "{#ProgIdList}"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
 Root: HKA; Subkey: "Software\Classes\Applications\{#AppExe}\SupportedTypes"; ValueType: string; ValueName: ".cue"; ValueData: ""; Tasks: openwith
 Root: HKA; Subkey: "{#CapKey}\FileAssociations"; ValueType: string; ValueName: ".cue"; ValueData: "{#ProgIdList}"; Tasks: openwith

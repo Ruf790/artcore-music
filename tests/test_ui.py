@@ -210,3 +210,22 @@ def test_waveform(qapp, mpvmod, media, data_dir):
     k = wf.request(first)
     assert got == [k] and k == key_of(first)
     wf.stop()
+
+
+def test_internet_radio(qapp, mpvmod, media, data_dir, icy_server, tmp_path):
+    url, stop = icy_server
+    pls = tmp_path / "test.pls"
+    pls.write_text(f"[playlist]\nnumberofentries=1\nFile1={url}\nTitle1=Test FM\nLength1=-1\n", encoding="utf-8")
+    w = _win(mpvmod)
+    w.open_paths([str(pls)])
+    assert len(w.pl.tracks) == 1 and w.pl.tracks[0].title == "Test FM"
+    assert w.items[w.pl.tracks[0].uid].text(4) == "эфир"
+    assert pump(qapp, 10, lambda: w.engine.icy.startswith("DJ Test"))
+    assert w.t_title.text().startswith("DJ Test") and w.t_artist.text() == "Test FM"
+    assert w.t_next.text() == "" and not w.seekbar.peaks
+    errors = []
+    w.engine.error.connect(errors.append)
+    stop()                                                         # the station goes off air
+    assert pump(qapp, 25, lambda: w.engine.stopped)                 # 3 reconnects, then it stops
+    assert any("reconnect 1/3" in e for e in errors)
+    w.close()

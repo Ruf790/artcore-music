@@ -30,6 +30,10 @@ class Track:
         return bool(self.cue)
 
     @property
+    def is_stream(self) -> bool:
+        return is_url(self.path)
+
+    @property
     def album_key(self) -> str:
         """Same album = same folder + same album tag (or the same CUE image)."""
         if self.cue:
@@ -80,12 +84,28 @@ def natural_key(s: str):
     return [int(p) if p.isdigit() else p.lower() for p in re.split(r"(\d+)", s)]
 
 
+def is_url(path: str) -> bool:
+    return bool(re.match(r"^[a-z][a-z0-9+.-]*://", path or "", re.I))
+
+
+def stream_title(url: str) -> str:
+    """A name for a stream without one: host + path («radio.example.com/live»)."""
+    m = re.match(r"^[a-z][a-z0-9+.-]*://([^/?#]+)([^?#]*)", url, re.I)
+    if not m:
+        return url
+    host, path = m.group(1), m.group(2).strip("/")
+    return host + ("/" + path if path else "")
+
+
 def is_audio(path: str) -> bool:
     return path.lower().endswith(AUDIO_EXT)
 
 
 def fill_tags(t: Track) -> Track:
     """Read the tags of a plain file (CUE tracks have theirs from the sheet; only the length is read)."""
+    if t.is_stream:                          # an internet radio: the name from the playlist stays
+        t.tagged = True
+        return t
     tg = meta.read(t.path)
     if t.is_cue:
         t.length = tg.length or t.length
@@ -166,18 +186,74 @@ def read_m3u(path: str) -> list[Track]:
             continue
         if line.startswith("#"):
             continue
-        p = line if os.path.isabs(line) or re.match(r"^[a-z]+://", line, re.I) else os.path.join(base, line)
-        p = os.path.normpath(p) if "://" not in p else p
-        if p.lower().endswith(CUE_EXT):
+        p = line if os.path.isabs(line) or is_url(line) else os.path.join(base, line)
+        p = os.path.normpath(p) if not is_url(p) else p
+        if not is_url(p) and p.lower().endswith(CUE_EXT):
             out.extend(from_cue(p))
         else:
             t = Track(path=p, length=length)
-            if " - " in title:
+            if is_url(p):
+                t.title = title or stream_title(p)
+                t.length = 0.0
+            elif " - " in title:
                 t.artist, t.title = (s.strip() for s in title.split(" - ", 1))
             elif title:
                 t.title = title
             out.append(t)
         title, length = "", 0.0
+    return _one_per_stream(out)
+
+
+def read_pls(path: str) -> list[Track]:
+    """[playlist] File1= / Title1= / Length1= (Winamp / SHOUTcast); keys in any case."""
+    with open(path, "rb") as f:
+        text = cue.decode(f.read())
+    base = os.path.dirname(os.path.abspath(path))
+    files: dict[int, str] = {}
+    titles: dict[int, str] = {}
+    lengths: dict[int, float] = {}
+    for line in text.splitlines():
+        m = re.match(r"\s*(file|title|length)(\d+)\s*=\s*(.*)$", line, re.I)
+        if not m:
+            continue
+        kind, n, val = m.group(1).lower(), int(m.group(2)), m.group(3).strip()
+        if kind == "file":
+            files[n] = val
+        elif kind == "title":
+            titles[n] = val
+        else:
+            try:
+                lengths[n] = max(0.0, float(val))
+            except ValueError:
+                pass
+    out: list[Track] = []
+    for n in sorted(files):
+        p = files[n]
+        if not is_url(p):
+            p = os.path.normpath(p if os.path.isabs(p) else os.path.join(base, p))
+        title = titles.get(n, "")
+        if is_url(p):
+            out.append(Track(path=p, title=title or stream_title(p)))
+        else:
+            t = Track(path=p, length=lengths.get(n, 0.0))
+            if " - " in title:
+                t.artist, t.title = (s.strip() for s in title.split(" - ", 1))
+            elif title:
+                t.title = title
+            out.append(t)
+    return _one_per_stream(out)
+
+
+def _one_per_stream(tracks: list[Track]) -> list[Track]:
+    """Radio playlists repeat the same URL as fallbacks: keep it once (the first, it has the name)."""
+    seen: set[str] = set()
+    out = []
+    for t in tracks:
+        if is_url(t.path):
+            if t.path in seen:
+                continue
+            seen.add(t.path)
+        out.append(t)
     return out
 
 
@@ -188,6 +264,10 @@ def write_m3u(path: str, tracks: list[Track]) -> None:
     lines = ["#EXTM3U"]
     done_cues: set[str] = set()
     for t in tracks:
+        if t.is_stream:
+            lines.append(f"#EXTINF:-1,{t.display_title()}")
+            lines.append(t.path)
+            continue
         if t.is_cue:
             key = os.path.normcase(t.cue)
             if key in done_cues:
@@ -215,12 +295,20 @@ def expand(paths: list[str]) -> list[Track]:
     """Whatever was opened or dropped → playlist entries (in that order)."""
     out: list[Track] = []
     for p in paths:
+        if is_url(p):                                   # a link to a radio / a stream
+            out.append(Track(path=p.strip(), title=stream_title(p.strip())))
+            continue
         if os.path.isdir(p):
             out.extend(_folder(p))
             continue
         low = p.lower()
         if low.endswith(CUE_EXT):
             out.extend(from_cue(p))
+        elif low.endswith(".pls"):
+            try:
+                out.extend(read_pls(p))
+            except OSError:
+                pass
         elif low.endswith(PLAYLIST_EXT):
             try:
                 out.extend(read_m3u(p))
@@ -264,11 +352,6 @@ class Playlist:
 
     def _reindex(self):
         self._map = {t.uid: t for t in self.tracks}
-
-    def has(self, t: Track) -> bool:
-        """The same file (and the same CUE range) is already in the list."""
-        key = (os.path.normcase(t.path), round(t.start, 2))
-        return any((os.path.normcase(x.path), round(x.start, 2)) == key for x in self.tracks)
 
     def without_dups(self, new: list[Track]) -> list[Track]:
         have = {(os.path.normcase(x.path), round(x.start, 2)) for x in self.tracks}
