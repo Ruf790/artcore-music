@@ -161,8 +161,11 @@ class Deck(QObject):
             pass
 
     def set_volume(self, master: float, muted: bool):
-        """mpv's volume is cubic (gain = (v/100)^3): scale the amplitude by `factor` in that space."""
-        v = max(0.0, master) * (max(0.0, self.factor) ** (1.0 / 3.0))
+        """The slider is quadratic (gain = (v/100)^2: 50 % = -12 dB, 29 % = -21 dB, 10 % = -40 dB) — the cubic
+        curve of mpv itself was too quiet in the middle. mpv's volume is cubic (gain = (vol/100)^3), so the
+        wanted gain, times the crossfade `factor`, is turned back into an mpv volume."""
+        gain = (max(0.0, min(100.0, master)) / 100.0) ** 2 * max(0.0, self.factor)
+        v = 100.0 * gain ** (1.0 / 3.0)
         if not self.alive:
             return
         try:
