@@ -2,6 +2,8 @@
 the output channel layout for WASAPI and the format line («FLAC 24/96 5.1 → PCM 6 кан.»)."""
 from __future__ import annotations
 
+import math
+
 BANDS = (31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
 PRESETS = {                          # dB per band
     "flat":       (0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
@@ -86,6 +88,28 @@ def parse_meter(md: dict | None) -> list[tuple[str, float, float]]:
     names = METER_NAMES.get(len(vals)) or [f"{i}" for i in sorted(vals)]
     out = [(names[i] if i < len(names) else str(i + 1), *vals[n]) for i, n in enumerate(sorted(vals))]
     return sorted(out, key=lambda c: METER_ORDER.index(c[0]) if c[0] in METER_ORDER else 99)
+
+
+# how mpv / ffmpeg mix 5.1 / 7.1 down to stereo: L = FL + 0.707·FC + 0.707·SL (+BL); the LFE is dropped
+_FOLD = {"FL": {"FL": 1.0}, "FR": {"FR": 1.0}, "FC": {"FL": 0.5, "FR": 0.5}, "LFE": {},
+         "SL": {"FL": 0.5}, "BL": {"FL": 0.5}, "SR": {"FR": 0.5}, "BR": {"FR": 0.5}, "BC": {"FL": 0.25, "FR": 0.25}}
+
+
+def fold_meter(levels: list[tuple[str, float, float]], out_channels: int) -> list[tuple[str, float, float]]:
+    """The meter reads before mpv's own downmix to the device: with 2 speakers (or 1) show what they get —
+    the channels summed by power with the downmix weights (an estimate, enough for the bars)."""
+    if not levels or out_channels <= 0 or out_channels >= len(levels) or out_channels > 2:
+        return levels
+    acc: dict[str, list[float]] = {}
+    for name, rms, peak in levels:
+        for dst, w in _FOLD.get(name, {"FL": 0.5, "FR": 0.5}).items():
+            if out_channels == 1:
+                dst, w = "FC", w * (0.5 if name in ("FL", "FR") else 1.0)
+            a = acc.setdefault(dst, [0.0, -120.0])
+            a[0] += w * 10 ** (rms / 10)
+            a[1] = max(a[1], peak + 10 * math.log10(w))
+    out = [(k, 10 * math.log10(v[0]) if v[0] > 1e-12 else -120.0, v[1]) for k, v in acc.items()]
+    return sorted(out, key=lambda c: METER_ORDER.index(c[0]))
 
 
 def build(cfg: dict, src_channels: int, src_layout: str = "", meter: bool = False) -> str:

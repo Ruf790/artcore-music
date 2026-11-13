@@ -429,3 +429,12 @@ def test_mini_looks(qapp, mpvmod, media, data_dir):
     assert not w.mini.strip
     w.toggle_mini()
     w.close()
+
+
+def test_meters_follow_a_stereo_output(qapp, mpvmod, media, data_dir):
+    """Two speakers: a 5.1 file shows the two channels mpv mixes it down to, not six."""
+    w = _win(mpvmod, channels="stereo")
+    w.open_paths([os.path.join(media, "Surround")])
+    assert pump(qapp, 6, lambda: w.levels.ch and max(w.levels.rms.values()) > -40)
+    assert w.levels.ch == ["FL", "FR"]
+    w.close()
