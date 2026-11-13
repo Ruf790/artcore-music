@@ -41,7 +41,7 @@ class SettingsDialog(QDialog):
     """General / playlist / controls. Sound has its own dialog (Ctrl+P)."""
     CHECKS = {
         "general":  [("grp_start", ("resume", "resume_play", "single_window", "check_updates")),
-                     ("grp_window", ("on_top", "media_keys", "tray", "close_to_tray", "notify"))],
+                     ("grp_window", ("on_top", "media_keys", "smtc", "tray", "close_to_tray", "notify"))],
         "playlist": [("grp_search", ("search_path", "search_clear_on_play")),
                      ("tab_playlist", ("follow_playing", "skip_dups", "confirm_clear"))],
         "playback": [("grp_look", ("waveform", "time_remaining", "lyrics"))],

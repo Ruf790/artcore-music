@@ -1,6 +1,6 @@
 """ArtCore Music — an audio player on the mpv engine (libmpv) with a Qt interface."""
-VERSION_TUPLE = (1, 3, 0, 0)
-VERSION       = "1.3.0"
+VERSION_TUPLE = (1, 4, 0, 0)
+VERSION       = "1.4.0"
 APP_TITLE     = "ArtCore Music"
 APP_ID        = "ArtCore.Music"
 REPO          = "Ruf790/artcore-music"

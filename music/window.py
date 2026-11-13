@@ -172,6 +172,9 @@ class MainWindow(QMainWindow):
         self.history = History()
         self.engine = Engine(mpv_module, cfg, self.pl)
         self.engine.queue_changed.connect(self._on_queue)
+        self.smtc = None
+        self._smtc_sent = (0.0, 0.0)                    # (time, position) of the last timeline update
+        self._setup_smtc()
         self.engine.track_changed.connect(self._on_track)
         self.engine.position.connect(self._on_pos)
         self.engine.paused_changed.connect(self._on_paused)
@@ -1369,6 +1372,14 @@ class MainWindow(QMainWindow):
         self._render_format()
         self._set_mini(tr)
         self._update_next_label()
+        if self.smtc is not None:
+            try:
+                no = int(tr.number or 0)
+            except ValueError:
+                no = 0
+            self.smtc.set_track(tr.display_title(), tr.artist or tr.albumartist, tr.album,
+                                getattr(self, "_cover_data", b"") or None, no)
+            self._smtc_timeline(force=True)
 
     def _show_stream(self, tr: Track):
         """Internet radio: the song on air (ICY) as the title, the station below."""
@@ -1391,6 +1402,8 @@ class MainWindow(QMainWindow):
             elide(self.mini.artist, tr.display_title(), 300)
         self.l_dur.setText(t("live"))
         self._update_next_label()
+        if self.smtc is not None:
+            self.smtc.set_track(icy or tr.display_title(), tr.display_title() if icy else t("radio"), t("radio"))
 
     def _on_icy(self, title: str):
         cur = self.engine.cur
@@ -1431,6 +1444,8 @@ class MainWindow(QMainWindow):
             self._refresh_item(cur.uid)
             self.dirty_timer.start()
         self.seekbar.set_state(pos, dur)
+        if self.smtc is not None:
+            self._smtc_timeline()
         if self.lyrics.isVisible():
             self.lyrics.set_pos(pos)
         self.l_pos.setText(fmt_time(pos))
@@ -1450,6 +1465,51 @@ class MainWindow(QMainWindow):
             self._refresh_item(self.engine.cur.uid)
         self._thumb_update()
         self._update_next_label()
+        self._smtc_status()
+
+    # ── Windows media controls (the card over the volume flyout / on the lock screen) ──
+    def _setup_smtc(self):
+        want = bool(self.cfg.get("smtc", True)) and winint.IS_WIN
+        if want and self.smtc is None:
+            from .smtc import Smtc
+            self.smtc = Smtc()
+            self.smtc.button.connect(self._smtc_button)
+            self.smtc.seek.connect(self.engine.seek)
+            if self.engine.cur is not None:
+                self._show_track(self.engine.cur)
+                self._smtc_status()
+        elif not want and self.smtc is not None:
+            self.smtc.stop()
+            self.smtc = None
+
+    def _smtc_button(self, name: str):
+        if name == "play":
+            if self.engine.cur is None or self.engine.stopped or self.engine.paused:
+                self.toggle_pause()
+        elif name == "pause":
+            self.engine.set_paused(True)
+        else:
+            self.media_action(name)
+
+    def _smtc_status(self):
+        if self.smtc is None:
+            return
+        e = self.engine
+        self.smtc.set_status("closed" if e.cur is None else "stopped" if e.stopped else
+                             "paused" if e.paused else "playing")
+        self._smtc_timeline(force=True)
+
+    def _smtc_timeline(self, force: bool = False):
+        """The position on the card: on every change of state, else every 5 s (as Windows asks)."""
+        if self.smtc is None or self.engine.cur is None or self.engine.cur.is_stream:
+            return
+        pos, dur = self._last_pos
+        now = time.monotonic()
+        t0, p0 = self._smtc_sent
+        expect = p0 + (now - t0 if not self.engine.paused else 0)
+        if force or now - t0 > 5 or abs(pos - expect) > 2:
+            self._smtc_sent = (now, pos)
+            self.smtc.set_timeline(pos, dur or self.engine.cur.duration())
 
     def _on_format(self, info: dict):
         self.fmt_info = info
@@ -1484,6 +1544,7 @@ class MainWindow(QMainWindow):
         self.t_format.show()
 
     def _on_finished(self):
+        self._smtc_status()
         if self.engine.stop_after is not None:
             self.engine.stop_after = None
             self.toast.show_text(t("stopped_after"), 2000)
@@ -1760,6 +1821,7 @@ class MainWindow(QMainWindow):
             config.save(self.cfg)
             self._apply_view_options()
             self._setup_tray()
+            self._setup_smtc()
             self.seekbar.set_wave_enabled(bool(self.cfg.get("waveform", True)))
             self._load_lyrics(self.engine.cur)
             self._wave_key = ""
@@ -2017,6 +2079,8 @@ class MainWindow(QMainWindow):
         config.save(self.cfg)
         self.save_timer.stop()
         self.tags.stop()
+        if self.smtc is not None:
+            self.smtc.stop()
         self.waves.stop()
         winint.unregister_media_keys(int(self.winId()), self._hotkeys)
         self.engine.shutdown()

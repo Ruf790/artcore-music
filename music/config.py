@@ -19,6 +19,7 @@ DEFAULTS = {
     "close_to_tray": False,         # ✕ hides the window to the tray
     "notify":        False,         # a tray notification on every new track (when the window is not active)
     "tray_hint_shown": False,
+    "smtc":          True,          # Windows media controls: the card with the cover over the volume flyout
     "repeat":        "off",         # off | all | one
     "shuffle":       False,
     # sound

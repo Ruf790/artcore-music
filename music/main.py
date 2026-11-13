@@ -85,6 +85,23 @@ def selftest() -> int:
         if len(seen) < 3 or any(v[1] != 6 for v in seen.values()) or \
                 any(seen.get(k, (0, 0, ""))[0] != c or f not in seen.get(k, (0, 0, ""))[2] for k, (c, f) in want.items()):
             raise RuntimeError("audio chain check failed: " + repr(seen))
+        if winint.IS_WIN:                        # Windows media controls: the card shows what we set
+            sm = win.smtc
+            if sm is None or not sm.started.wait(10) or not sm.ok:
+                raise RuntimeError(f"SMTC failed: {getattr(sm, 'error', 'off')}")
+            from PySide6.QtCore import QBuffer, QIODevice
+            from .widgets import placeholder_cover
+            buf = QBuffer()
+            buf.open(QIODevice.WriteOnly)
+            placeholder_cover(256).save(buf, "PNG")
+            cover = bytes(buf.data())
+            sm.set_track("Selftest title", "ArtCore", "Selftest album", cover, 3)
+            sm.set_status("playing")
+            sm.set_timeline(12.0, 180.0)
+            got = sm.probe(10)
+            lines.append(f"SMTC: {got} {sm.error}".strip())
+            if got.get("title") != "Selftest title" or not got.get("thumb") or got.get("status") != 3:
+                raise RuntimeError(f"SMTC did not take the track: {got} {sm.error}")
         tb = winint.ThumbBar()
         if winint.IS_WIN:
             ok = tb._create()

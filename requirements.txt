@@ -3,3 +3,11 @@ python-mpv>=1.0.6
 qtawesome>=1.3
 Pillow>=10
 mutagen>=1.47
+# Windows media controls (SMTC) — pywinrt
+winrt-runtime>=3.0; sys_platform == "win32"
+winrt-Windows.Foundation>=3.0; sys_platform == "win32"
+winrt-Windows.Foundation.Collections>=3.0; sys_platform == "win32"
+winrt-Windows.Media>=3.0; sys_platform == "win32"
+winrt-Windows.Media.Playback>=3.0; sys_platform == "win32"
+winrt-Windows.Storage>=3.0; sys_platform == "win32"
+winrt-Windows.Storage.Streams>=3.0; sys_platform == "win32"

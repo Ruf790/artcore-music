@@ -230,6 +230,8 @@ STRINGS = {
     "grp_look":       ("Вид", "Look"),
     "grp_steps":      ("Шаги", "Steps"),
     "opt_resume_play": ("…и сразу продолжать играть (иначе — на паузе)", "…and keep playing at once (else paused)"),
+    "opt_smtc":       ("Карточка Windows с обложкой и ⏮ ⏯ ⏭ (над громкостью и на экране блокировки)",
+                       "Windows media card with the cover and ⏮ ⏯ ⏭ (over the volume flyout and on the lock screen)"),
     "opt_tray":       ("Значок в области уведомлений (трей)", "Icon in the notification area (tray)"),
     "opt_close_to_tray": ("Крестик сворачивает в трей, музыка играет дальше", "✕ hides to the tray, the music goes on"),
     "opt_notify":     ("Уведомление о новом треке, когда окно не активно", "Notify about a new track when the window is not active"),
