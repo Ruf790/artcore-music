@@ -298,3 +298,25 @@ def test_tabs_favorites_history(qapp, mpvmod, media, data_dir):
     w2.close_tab(1)                                                  # the playing tab: playback stops
     assert w2.tabbar.count() == 3 and w2.engine.cur is None
     w2.close()
+
+
+def test_lyrics_panel(qapp, mpvmod, media, data_dir, tmp_path):
+    import shutil
+    d = tmp_path / "Album"
+    d.mkdir()
+    src = os.path.join(media, "Stereo Album", "01 - Первый трек.mp3")
+    shutil.copy(src, d / "01 - Song.mp3")
+    (d / "01 - song.LRC").write_text("[00:00.00]Intro\n[00:01.00]Line one\n[00:02.00]Line two\n", encoding="utf-8")
+    shutil.copy(src, d / "02 - No lyrics.mp3")
+    w = _win(mpvmod)
+    w.open_paths([str(d)])
+    assert w._lyr is not None and w._lyr.synced and w.lyrics.isVisible() and w.b_lyrics.isVisible()
+    assert pump(qapp, 4, lambda: w.lyrics.cur == 1)                  # «Line one» at 1 s
+    w.lyrics._clicked(w.lyrics.item(2))                              # click a line: seek there
+    assert pump(qapp, 2, lambda: w._last_pos[0] >= 2.0 and w.lyrics.cur == 2)
+    w.toggle_lyrics()
+    assert not w.lyrics.isVisible()
+    w.toggle_lyrics()
+    w.next()
+    assert w._lyr is None and not w.lyrics.isVisible() and not w.b_lyrics.isVisible()
+    w.close()

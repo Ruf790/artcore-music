@@ -19,7 +19,8 @@ from .library import Favorites, History
 from .i18n import t
 from .playlist import Playlist, Track, expand, fill_tags, is_url, write_m3u
 from .waveform import Waveforms, key_of
-from .widgets import ClickLabel, CoverView, PlaylistView, SeekBar, Toast, WaveSeekBar, ctl_button, elide, fmt_time
+from . import lyrics as lyrics_mod
+from .widgets import ClickLabel, CoverView, LyricsView, PlaylistView, SeekBar, Toast, WaveSeekBar, ctl_button, elide, fmt_time
 
 COL_N, COL_TITLE, COL_ARTIST, COL_ALBUM, COL_LEN, COL_FAV = range(6)
 NCOLS = 6
@@ -271,13 +272,49 @@ class MainWindow(QMainWindow):
         self.t_format.hide()
         row.addWidget(self.t_format)
         row.addStretch(1)
+        self.b_lyrics = ctl_button("fa6s.align-left", t("lyrics") + " (L)", 15, self.toggle_lyrics)
+        self.b_lyrics.hide()
+        row.addWidget(self.b_lyrics)
         lay.addLayout(row)
         self.t_next = QLabel()
         self.t_next.setObjectName("hint")
         self.t_next.setWordWrap(True)
         lay.addWidget(self.t_next)
+        self.lyrics = LyricsView()
+        self.lyrics.seek.connect(self.engine.seek)
+        self.lyrics.hide()
+        lay.addWidget(self.lyrics, 1)
         lay.addStretch(1)
+        self.now_lay = lay
+        self._lyr = None
         return w
+
+    # ── lyrics ────────────────────────────────────────────────
+    def _load_lyrics(self, tr: Track | None):
+        lyr = lyrics_mod.load(tr) if self.cfg.get("lyrics", True) else None
+        self._lyr = lyr
+        self.lyrics.set_lyrics(lyr)
+        self.b_lyrics.setVisible(lyr is not None)
+        if lyr is not None:
+            self.b_lyrics.setToolTip(t("lyrics") + (" (LRC)" if lyr.synced else "") + " (L)\n" +
+                                     (os.path.basename(lyr.source) if lyr.source != "tags" else t("lyrics_tags")))
+        self._apply_lyrics_visible()
+
+    def _apply_lyrics_visible(self):
+        on = self._lyr is not None and bool(self.cfg.get("lyrics_show", True))
+        self.lyrics.setVisible(on)
+        self.b_lyrics.setObjectName("on" if on else "ctl")
+        self.b_lyrics.style().unpolish(self.b_lyrics)
+        self.b_lyrics.style().polish(self.b_lyrics)
+        # the spacer at the end takes the room only when there are no lyrics
+        self.now_lay.setStretch(self.now_lay.count() - 1, 0 if on else 1)
+        self.cover.setMaximumHeight(220 if on else 16777215)
+        if on:
+            self.lyrics.set_pos(self._last_pos[0])
+
+    def toggle_lyrics(self):
+        self.cfg["lyrics_show"] = not self.cfg.get("lyrics_show", True)
+        self._apply_lyrics_visible()
 
     def _build_list(self) -> QWidget:
         w = QWidget()
@@ -471,6 +508,7 @@ class MainWindow(QMainWindow):
         sc("Ctrl+Shift+Tab", lambda: self.tabbar.setCurrentIndex((self.tabbar.currentIndex() - 1) % self.tabbar.count()))
         sc("Ctrl+D", self.toggle_fav_selected)
         sc("F2", not_typing(self.edit_tags_selected))
+        sc("L", self.toggle_lyrics)
         sc("Ctrl+Q", lambda: self.queue_selected(front=True))
         sc("Ctrl+Shift+Q", lambda: self.queue_selected(front=False))
         sc("Ctrl+H", lambda: self.open_library_tab("history"))
@@ -1271,6 +1309,7 @@ class MainWindow(QMainWindow):
             if prev_uid != tr.uid:
                 self._notify(tr)
                 self._load_wave(tr)
+                self._load_lyrics(tr)
                 self.history.add(tr)
                 self._tab_icons()
         self._show_track(tr)
@@ -1296,6 +1335,7 @@ class MainWindow(QMainWindow):
     def _show_track(self, tr: Track | None):
         if tr is None:
             self._load_wave(None)
+            self._load_lyrics(None)
             self.t_title.setText(APP_TITLE)
             self.t_artist.setText(t("idle_sub"))
             self.t_album.setText("")
@@ -1391,6 +1431,8 @@ class MainWindow(QMainWindow):
             self._refresh_item(cur.uid)
             self.dirty_timer.start()
         self.seekbar.set_state(pos, dur)
+        if self.lyrics.isVisible():
+            self.lyrics.set_pos(pos)
         self.l_pos.setText(fmt_time(pos))
         self.l_dur.setText("−" + fmt_time(max(0.0, dur - pos)) if self.cfg.get("time_remaining") and dur
                            else fmt_time(dur))
@@ -1719,6 +1761,7 @@ class MainWindow(QMainWindow):
             self._apply_view_options()
             self._setup_tray()
             self.seekbar.set_wave_enabled(bool(self.cfg.get("waveform", True)))
+            self._load_lyrics(self.engine.cur)
             self._wave_key = ""
             self._load_wave(self.engine.cur)
             self._on_pos(*self._last_pos)

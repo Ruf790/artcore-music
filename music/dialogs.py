@@ -44,7 +44,7 @@ class SettingsDialog(QDialog):
                      ("grp_window", ("on_top", "media_keys", "tray", "close_to_tray", "notify"))],
         "playlist": [("grp_search", ("search_path", "search_clear_on_play")),
                      ("tab_playlist", ("follow_playing", "skip_dups", "confirm_clear"))],
-        "playback": [("grp_look", ("waveform", "time_remaining"))],
+        "playback": [("grp_look", ("waveform", "time_remaining", "lyrics"))],
     }
 
     def __init__(self, cfg: dict, parent=None):
@@ -461,7 +461,7 @@ KEYS = [
     ("T", "k_ontop"), ("Ctrl + F", "k_find"), ("Ctrl + J", "k_jump"), ("Ctrl + Shift + E", "k_stop_after"), ("Del", "k_delete"),
     ("Ctrl + O", "k_open"), ("Ctrl + Shift + O", "k_open_folder"), ("Ctrl + U", "k_url"),
     ("Ctrl + N / W / Tab", "k_tabs"), ("Ctrl + Q / Shift + Q", "k_queue"), ("Ctrl + D", "k_fav"),
-    ("Ctrl + B / H", "k_library"), ("F2", "k_tags"), ("Ctrl + L", "k_load_pl"),
+    ("Ctrl + B / H", "k_library"), ("F2", "k_tags"), ("L", "k_lyrics"), ("Ctrl + L", "k_load_pl"),
     ("Ctrl + S", "k_save_pl"), ("Ctrl + ,", "k_settings"), ("⏮ ⏯ ⏭ ⏹", "k_media"), ("F1", "k_keys"),
 ]
 

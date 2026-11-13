@@ -51,7 +51,9 @@ DEFAULTS = {
     "volume_step":   5,
     "prev_restart":  3,             # ⏮ after this many seconds restarts the track (0 = always the previous one)
     "time_remaining": False,
-    "waveform":      True,          # the seek bar shows the waveform of the track        # the right time label shows −remaining
+    "waveform":      True,
+    "lyrics":        True,          # look for lyrics (.lrc / .txt next to the track, or in its tags)
+    "lyrics_show":   True,          # the lyrics panel under the cover          # the seek bar shows the waveform of the track        # the right time label shows −remaining
     # window
     "media_keys":    True,          # global ⏮ ⏯ ⏭ keys of the keyboard
     "check_updates": True,
