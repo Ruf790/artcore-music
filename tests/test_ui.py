@@ -392,7 +392,9 @@ def test_upmix_meters_reach_the_rears(qapp, mpvmod, media, data_dir):
 def test_mini_looks(qapp, mpvmod, media, data_dir):
     w = _win(mpvmod)
     w.open_paths([os.path.join(media, "Stereo Album")])
-    assert pump(qapp, 20, lambda: w.engine.cur is not None and w.seekbar.peaks)       # CI decodes slowly
+    assert pump(qapp, 4, lambda: w.engine.cur is not None)
+    w.engine.set_paused(True)                                      # 4 s tracks: stay on this one
+    assert pump(qapp, 20, lambda: w.seekbar.peaks)                 # CI decodes slowly
     w.toggle_mini()
     m = w.mini
     assert m.isVisible() and not m.strip and m.title.text()
