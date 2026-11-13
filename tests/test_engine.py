@@ -86,3 +86,30 @@ def test_xfade_off_within_album(qapp, mpvmod, media, data_dir):
     assert pump(qapp, 10, lambda: done)
     assert len(e.decks) == 1                                     # one album: gapless, the second deck never made
     e.shutdown()
+
+
+def test_late_events_after_shutdown(qapp, mpvmod, media, data_dir):
+    """Queued mpv events that arrive after the window closed must not touch the destroyed handle."""
+    import os
+    from conftest import pump
+    from music import config
+    from music.engine import Engine
+    from music.playlist import Playlist, expand
+    cfg = config.load()
+    pl = Playlist()
+    pl.add(expand([os.path.join(media, "Stereo Album")]))
+    e = Engine(mpvmod, cfg, pl)
+    e.play(pl.tracks[0])
+    pump(qapp, 0.3)
+    d = e.deck
+    e.shutdown()
+    assert not d.alive
+    e._on_loaded(d)                       # what a queued file-loaded would do
+    e._on_ended(d, "eof", 0)
+    e._on_prop(d, "audio-params", {"channel-count": 2})
+    e.requeue()
+    e.play(pl.tracks[1])
+    e.set_paused(True)
+    e.seek(1.0)
+    d.queue(pl.tracks[1])
+    pump(qapp, 0.3)

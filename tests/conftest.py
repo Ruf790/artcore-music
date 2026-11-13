@@ -35,11 +35,22 @@ def mpvmod():
 def qapp():
     from PySide6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])
+    from music.main import gui_thread_gc
+    gui_thread_gc(app)
     locale.setlocale(locale.LC_NUMERIC, "C")
     from music import style
     app.setStyle("Fusion")
     app.setStyleSheet(style.stylesheet())
-    return app
+    yield app
+    # tear the windows of all tests down in the GUI thread, before Python takes Qt apart at exit
+    import gc
+    from PySide6.QtCore import QCoreApplication, QEvent
+    for w in app.topLevelWidgets():
+        w.hide()
+        w.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    app.processEvents()
+    gc.collect()
 
 
 @pytest.fixture()
@@ -49,7 +60,9 @@ def data_dir(tmp_path, monkeypatch):
 
 
 def pump(app, secs: float, until=None):
+    import gc
     import time
+    gc.collect()                                     # here, in the GUI thread (see main.gui_thread_gc)
     t0 = time.monotonic()
     while time.monotonic() - t0 < secs:
         app.processEvents()

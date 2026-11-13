@@ -67,6 +67,7 @@ class Deck(QObject):
         if int(cfg.get("samplerate", 0) or 0):
             opts["audio_samplerate"] = int(cfg["samplerate"])
         self.m = mpvmod.MPV(**opts)
+        self.alive = True                    # False after terminate(): the mpv handle is gone
         self.version = _mpv_version(self.m)
         self.track: Track | None = None      # what this deck plays (or loads)
         self.queued: Track | None = None     # what mpv will play after it (gapless)
@@ -75,10 +76,12 @@ class Deck(QObject):
         self.factor = 1.0                    # crossfade gain (linear amplitude)
         self.loaded_at = 0.0
         for name_ in OBSERVED:
-            self.m.observe_property(name_, lambda n, v: self.prop.emit(self, n, v))
-        self.m.event_callback("file-loaded")(lambda _e: self.loaded.emit(self))
+            self.m.observe_property(name_, lambda n, v: self.alive and self.prop.emit(self, n, v))
+        self.m.event_callback("file-loaded")(lambda _e: self.alive and self.loaded.emit(self))
 
         def end_file(ev):
+            if not self.alive:
+                return
             try:
                 d = ev.data
                 reason = {0: "eof", 2: "stop", 3: "quit", 4: "error", 5: "redirect"}.get(int(d.reason), "eof")
@@ -89,6 +92,8 @@ class Deck(QObject):
 
     def get(self, name: str, default=None):
         """A property (python-mpv's mpv["x"] would read the *option* x)."""
+        if not self.alive:
+            return default
         try:
             v = getattr(self.m, name.replace("-", "_").replace("/", "_"))
             return default if v is None else v
@@ -96,6 +101,8 @@ class Deck(QObject):
             return default
 
     def node(self, name: str, default=None):
+        if not self.alive:
+            return default
         try:
             v = self.m._get_property(name)
             return default if v is None else v
@@ -106,6 +113,8 @@ class Deck(QObject):
         return f"start={fmt_num(start)}" if start > 0.001 else ""
 
     def loadfile(self, path: str, mode: str, start: float = 0.0):
+        if not self.alive:
+            return
         opts = self._opts(start)
         args = [path, mode]
         if opts:
@@ -116,6 +125,8 @@ class Deck(QObject):
         self.m.command("loadfile", *args)
 
     def load(self, track: Track, offset: float = 0.0, paused: bool = False):
+        if not self.alive:
+            return
         self.track = track
         self.queued = None
         self.pending = True
@@ -125,6 +136,8 @@ class Deck(QObject):
 
     def queue(self, track: Track | None):
         """Make `track` the only entry after the current one in mpv's playlist (None = nothing after)."""
+        if not self.alive:
+            return
         try:
             self.m.command("playlist-clear")
         except Exception:
@@ -140,6 +153,8 @@ class Deck(QObject):
         self.track = None
         self.queued = None
         self.pending = False
+        if not self.alive:
+            return
         try:
             self.m.command("stop")
         except Exception:
@@ -148,6 +163,8 @@ class Deck(QObject):
     def set_volume(self, master: float, muted: bool):
         """mpv's volume is cubic (gain = (v/100)^3): scale the amplitude by `factor` in that space."""
         v = max(0.0, master) * (max(0.0, self.factor) ** (1.0 / 3.0))
+        if not self.alive:
+            return
         try:
             self.m.volume = min(100.0, v)
             self.m.mute = bool(muted)
@@ -155,6 +172,8 @@ class Deck(QObject):
             pass
 
     def apply_af(self, cfg: dict, quiet: bool = True) -> str:
+        if not self.alive:
+            return ""
         ap = self.get("audio-params", {}) or {}
         ch = int(ap.get("channel-count") or 0)
         if not ch:
@@ -175,6 +194,14 @@ class Deck(QObject):
             return str(e)
 
     def terminate(self):
+        if not self.alive:
+            return
+        self.alive = False
+        for sig in (self.prop, self.loaded, self.ended):
+            try:
+                sig.disconnect()
+            except (RuntimeError, TypeError):
+                pass
         try:
             self.m.terminate()
         except Exception:
@@ -202,6 +229,7 @@ class Engine(QObject):
         self.paused = True
         self.stopped = True
         self.fade: dict | None = None         # {"old": Deck, "t0": time, "len": seconds}
+        self.dead = False                     # shut down: late mpv events are ignored
         self._errors = 0
         self._last_pos = (0.0, 0.0)
         self._seek_guard = 0.0
@@ -238,6 +266,8 @@ class Engine(QObject):
 
     # ── commands ──────────────────────────────────────────────
     def play(self, track: Track, offset: float = 0.0, paused: bool = False):
+        if self.dead:
+            return
         self._pfade_cancel()
         self._end_fade()
         self.cur = track
@@ -258,6 +288,8 @@ class Engine(QObject):
         self.set_paused(not self.paused)
 
     def set_paused(self, p: bool):
+        if self.dead:
+            return
         if self.stopped:
             return
         if p and self.fade:
@@ -325,6 +357,8 @@ class Engine(QObject):
 
     def seek(self, sec: float):
         """Seek to `sec` inside the current track."""
+        if self.dead:
+            return
         if self.stopped or self.cur is None:
             return
         self._end_fade()
@@ -366,6 +400,8 @@ class Engine(QObject):
 
     def apply_options(self):
         """ReplayGain / channel layout / device changed in the settings."""
+        if self.dead:
+            return
         rg = self.cfg.get("replaygain", "album")
         for d in self.decks:
             for k, v in (("replaygain", rg if rg != "off" else "no"),
@@ -389,6 +425,8 @@ class Engine(QObject):
 
     def requeue(self):
         """The playlist, repeat or shuffle changed: queue the right next track for gapless."""
+        if self.dead:
+            return
         d = self.deck
         if self.stopped or d.pending or self.fade or self.cur is None:
             return
@@ -403,6 +441,7 @@ class Engine(QObject):
             return []
 
     def shutdown(self):
+        self.dead = True
         self.fade_timer.stop()
         self.pfade_timer.stop()
         for d in self.decks:
@@ -472,6 +511,8 @@ class Engine(QObject):
 
     # ── mpv events ────────────────────────────────────────────
     def _on_loaded(self, d: Deck):
+        if self.dead or not d.alive:
+            return
         if d.pending:
             d.pending = False
         elif d.queued is not None:                     # mpv went on to the queued track by itself (gapless)
@@ -488,6 +529,8 @@ class Engine(QObject):
             self._emit_format()
 
     def _on_ended(self, d: Deck, reason: str, err: int):
+        if self.dead or not d.alive:
+            return
         if d is not self.deck or reason in ("stop", "redirect", "quit"):
             return
         if d.pending and reason != "error":
@@ -518,6 +561,8 @@ class Engine(QObject):
             self.finished.emit()
 
     def _on_prop(self, d: Deck, name: str, val):
+        if self.dead or not d.alive:
+            return
         if d is not self.deck:
             return
         if name == "time-pos":

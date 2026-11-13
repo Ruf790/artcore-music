@@ -102,6 +102,22 @@ def selftest() -> int:
         return 1
 
 
+def gui_thread_gc(app) -> None:
+    """Python's cyclic GC runs in whatever thread allocates — mpv's event thread or the tag reader too. If it
+    frees a closed dialog or window there, Qt destroys a widget outside the GUI thread and corrupts memory
+    (rare random crashes). So: automatic GC off, collected by a timer in the GUI thread instead."""
+    import gc
+    gc.disable()
+    timer = QTimer(app)
+    timer.setInterval(2000)
+    timer.timeout.connect(lambda: gc.collect(0) if gc.get_count()[0] > 700 else None)
+    timer.start()
+    full = QTimer(app)
+    full.setInterval(30000)
+    full.timeout.connect(gc.collect)
+    full.start()
+
+
 def main() -> int:
     args = sys.argv[1:]
     if "--selftest" in args:
@@ -117,6 +133,7 @@ def main() -> int:
     from . import style
     app.setStyleSheet(style.stylesheet())
     app.setWindowIcon(style.app_icon())
+    gui_thread_gc(app)
     if cfg.get("language", "ru") == "ru":
         from PySide6.QtCore import QLibraryInfo, QTranslator
         tr = QTranslator(app)

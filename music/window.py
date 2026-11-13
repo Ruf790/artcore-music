@@ -38,7 +38,9 @@ class TagReader:
         self.q: queue.Queue = queue.Queue()
         self.bridge = bridge
         self.alive = True
-        threading.Thread(target=self._run, daemon=True).start()
+        self.lock = threading.Lock()         # stop() waits for an emit in progress; none after it
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
 
     def add(self, tracks: list[Track]):
         for tr in tracks:
@@ -56,11 +58,16 @@ class TagReader:
                 fill_tags(tr)
             except Exception:
                 tr.tagged = True
-            self.bridge.tagged.emit(tr.uid)
+            with self.lock:
+                if not self.alive:              # the window is closing: its Bridge may be gone
+                    break
+                self.bridge.tagged.emit(tr.uid)
 
     def stop(self):
-        self.alive = False
+        with self.lock:
+            self.alive = False
         self.q.put(None)
+        self.thread.join(1.0)                   # a file being read is finished, not cut
 
 
 class MiniWindow(QWidget):
