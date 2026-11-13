@@ -8,14 +8,15 @@ import time
 
 from PySide6.QtCore import QByteArray, QObject, QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QActionGroup, QColor, QFont, QKeySequence, QShortcut
-from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
+from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
+                               QMainWindow,
                                QMenu, QMessageBox, QSlider, QSplitter, QSystemTrayIcon, QTreeWidgetItem, QVBoxLayout,
                                QWidget)
 
 from . import APP_TITLE, AUDIO_EXT, CUE_EXT, PLAYLIST_EXT, VERSION, audio, config, meta, style, winint
 from .engine import Engine
 from .i18n import t
-from .playlist import Playlist, Track, expand, fill_tags, write_m3u
+from .playlist import Playlist, Track, expand, fill_tags, is_url, write_m3u
 from .waveform import Waveforms, key_of
 from .widgets import ClickLabel, CoverView, PlaylistView, SeekBar, Toast, WaveSeekBar, ctl_button, elide, fmt_time
 
@@ -170,6 +171,7 @@ class MainWindow(QMainWindow):
         self.engine.format_changed.connect(self._on_format)
         self.engine.finished.connect(self._on_finished)
         self.engine.error.connect(lambda s: self.toast.show_text(t("play_error", s), 3500))
+        self.engine.stream_title.connect(self._on_icy)
         self.bridge = Bridge()
         self.bridge.tagged.connect(self._on_tagged)
         self.bridge.update.connect(self._on_update_result)
@@ -299,6 +301,7 @@ class MainWindow(QMainWindow):
         top.addSpacing(4)
         top.addWidget(ctl_button("fa6s.file-circle-plus", t("add_files") + " (Ctrl+O)", 17, self.add_files_dialog))
         top.addWidget(ctl_button("fa6s.folder-plus", t("add_folder") + " (Ctrl+Shift+O)", 17, self.add_folder_dialog))
+        top.addWidget(ctl_button("fa6s.tower-broadcast", t("add_url") + " (Ctrl+U)", 17, self.add_url_dialog))
         top.addWidget(ctl_button("fa6s.folder-open", t("load_pl") + " (Ctrl+L)", 17, self.load_playlist_dialog))
         top.addWidget(ctl_button("fa6s.floppy-disk", t("save_pl") + " (Ctrl+S)", 17, self.save_playlist_dialog))
         top.addWidget(ctl_button("fa6s.trash-can", t("clear_pl"), 17, self.clear_playlist))
@@ -433,6 +436,7 @@ class MainWindow(QMainWindow):
         sc("Delete", self.remove_selected)
         sc("Ctrl+O", self.add_files_dialog)
         sc("Ctrl+Shift+O", self.add_folder_dialog)
+        sc("Ctrl+U", self.add_url_dialog)
         sc("Ctrl+L", self.load_playlist_dialog)
         sc("Ctrl+S", self.save_playlist_dialog)
         sc("Ctrl+,", self.settings_dialog)
@@ -460,9 +464,10 @@ class MainWindow(QMainWindow):
         it.setText(COL_N, tr.number or "")
         it.setText(COL_TITLE, tr.display_title())
         it.setText(COL_ARTIST, tr.artist or tr.albumartist)
-        it.setText(COL_ALBUM, tr.album + (f" ({tr.year})" if tr.year and tr.album else ""))
+        it.setText(COL_ALBUM, tr.album + (f" ({tr.year})" if tr.year and tr.album else "") if not tr.is_stream
+                   else t("radio"))
         d = tr.duration()
-        it.setText(COL_LEN, fmt_time(d) if d else "")
+        it.setText(COL_LEN, t("live") if tr.is_stream else fmt_time(d) if d else "")
         it.setToolTip(COL_TITLE, tr.path + (f"\n{t('cue_track')} {fmt_time(tr.start)}" if tr.is_cue else ""))
         playing = self.engine.cur is not None and tr.uid == self.engine.cur.uid
         f = QFont(self.view.font())
@@ -782,11 +787,25 @@ class MainWindow(QMainWindow):
             e.acceptProposedAction()
 
     def dropEvent(self, e):
-        paths = [u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()]
+        paths = [u.toLocalFile() if u.isLocalFile() else u.toString() for u in e.mimeData().urls()
+                 if u.isLocalFile() or u.scheme() in ("http", "https")]
         if paths:
             self.open_paths(paths, add=False)
 
+    def add_url_dialog(self):
+        clip = (QApplication.clipboard().text() or "").strip()
+        url, ok = QInputDialog.getText(self, t("add_url"), t("add_url_hint"), QLineEdit.Normal,
+                                       clip if is_url(clip) else "")
+        url = (url or "").strip()
+        if not ok or not url:
+            return
+        if not is_url(url):
+            url = "http://" + url
+        self.add_paths([url])
+
     def _remember_dir(self, p: str):
+        if is_url(p):
+            return
         d = p if os.path.isdir(p) else os.path.dirname(p)
         if d:
             self.cfg["last_dir"] = d
@@ -810,7 +829,7 @@ class MainWindow(QMainWindow):
 
     def load_playlist_dialog(self):
         p, _ = QFileDialog.getOpenFileName(self, t("load_pl"), self.cfg.get("last_dir", ""),
-                                           f"{t('playlists')} (*.m3u *.m3u8 *.cue)")
+                                           f"{t('playlists')} (*.m3u *.m3u8 *.pls *.cue)")
         if p:
             self.open_paths([p], add=False)
 
@@ -821,7 +840,7 @@ class MainWindow(QMainWindow):
         p, _ = QFileDialog.getSaveFileName(self, t("save_pl"), start, "M3U8 (*.m3u8);;M3U (*.m3u)")
         if not p:
             return
-        if not p.lower().endswith(PLAYLIST_EXT):
+        if not p.lower().endswith((".m3u", ".m3u8")):
             p += ".m3u8"
         try:
             write_m3u(p, self.pl.tracks)
@@ -862,7 +881,8 @@ class MainWindow(QMainWindow):
     def prev(self):
         pos, _ = self._last_pos
         limit = int(self.cfg.get("prev_restart", 3))
-        if limit and pos > limit and self.engine.cur is not None and not self.engine.stopped:
+        if limit and pos > limit and self.engine.cur is not None and not self.engine.stopped \
+                and not self.engine.cur.is_stream:
             self.engine.seek(0)
             return
         prv = self.pl.prev_before(self.engine.cur)
@@ -941,7 +961,7 @@ class MainWindow(QMainWindow):
         self._dirty = True
 
     def _load_wave(self, tr: Track | None):
-        if tr is None or not self.cfg.get("waveform", True):
+        if tr is None or tr.is_stream or not self.cfg.get("waveform", True):
             self._wave_key = ""
             self.seekbar.set_peaks(None)
             return
@@ -972,6 +992,9 @@ class MainWindow(QMainWindow):
             self.seekbar.set_state(0, 0)
             self._update_next_label()
             return
+        if tr.is_stream:
+            self._show_stream(tr)
+            return
         self.t_title.setText(tr.display_title())
         self.t_artist.setText(tr.artist or tr.albumartist or "")
         bits = [b for b in (tr.album, tr.year) if b]
@@ -991,8 +1014,44 @@ class MainWindow(QMainWindow):
         self._set_mini(tr)
         self._update_next_label()
 
+    def _show_stream(self, tr: Track):
+        """Internet radio: the song on air (ICY) as the title, the station below."""
+        icy = self.engine.icy
+        self.t_title.setText(icy or tr.display_title())
+        self.t_artist.setText(tr.display_title() if icy else t("radio"))
+        from .playlist import stream_title
+        self.t_album.setText(t("radio") + " · " + stream_title(tr.path) if icy else stream_title(tr.path))
+        self.setWindowTitle(f"{icy or tr.display_title()} — {APP_TITLE}")
+        if getattr(self, "_cover_key", None) != (tr.path, ""):
+            self._cover_key = (tr.path, "")
+            self._cover_data = b""
+            self.cover.set_image(None)
+        self.cur_tags = None
+        self._tags_path = ""
+        self._render_format()
+        self._set_mini(tr)
+        if self.mini is not None and icy:
+            elide(self.mini.title, icy, 300)
+            elide(self.mini.artist, tr.display_title(), 300)
+        self.l_dur.setText(t("live"))
+        self._update_next_label()
+
+    def _on_icy(self, title: str):
+        cur = self.engine.cur
+        if cur is None or not cur.is_stream:
+            return
+        self._show_stream(cur)
+        if title:
+            if self.tray is not None:
+                self.tray.setToolTip(f"{title} — {cur.display_title()}"[:120])
+            if self.cfg.get("notify") and self.tray is not None and not self.isActiveWindow():
+                self.tray.showMessage(title, cur.display_title(), style.app_icon(), 3500)
+
     def _update_next_label(self):
         cur = self.engine.cur
+        if cur is not None and cur.is_stream:
+            self.t_next.setText("")
+            return
         if cur is not None and not self.engine.stopped and self.pl.stop_after == cur.uid:
             self.t_next.setText(t("up_next_stop"))
             return
@@ -1003,6 +1062,14 @@ class MainWindow(QMainWindow):
     def _on_pos(self, pos: float, dur: float):
         self._last_pos = (pos, dur)
         cur = self.engine.cur
+        if cur is not None and cur.is_stream:
+            self.seekbar.set_state(0, 0)
+            self.l_pos.setText(fmt_time(pos))
+            self.l_dur.setText(t("live"))
+            if self.mini is not None and self.mini.isVisible():
+                self.mini.seek.set_state(0, 0)
+                self.mini.time.setText(f"{fmt_time(pos)} · {t('live')}")
+            return
         if cur is not None and dur and not cur.duration():          # DTS / TrueHD: mutagen does not know the length
             cur.length = cur.start + dur
             self._refresh_item(cur.uid)
@@ -1232,6 +1299,7 @@ class MainWindow(QMainWindow):
         m = QMenu(self)
         m.addAction(style.icon("fa6s.file-circle-plus"), t("add_files") + "\tCtrl+O", self.add_files_dialog)
         m.addAction(style.icon("fa6s.folder-plus"), t("add_folder") + "\tCtrl+Shift+O", self.add_folder_dialog)
+        m.addAction(style.icon("fa6s.tower-broadcast"), t("add_url") + "\tCtrl+U", self.add_url_dialog)
         m.addAction(style.icon("fa6s.folder-open"), t("load_pl") + "\tCtrl+L", self.load_playlist_dialog)
         m.addAction(style.icon("fa6s.floppy-disk"), t("save_pl") + "\tCtrl+S", self.save_playlist_dialog)
         m.addSeparator()
@@ -1390,7 +1458,7 @@ class MainWindow(QMainWindow):
         pos, _ = self._last_pos
         s = {"tracks": [tr.to_dict() for tr in self.pl.tracks],
              "current": self.pl.index_of(cur),
-             "position": round(pos, 1) if cur is not None and not self.engine.stopped else 0.0,
+             "position": round(pos, 1) if cur is not None and not self.engine.stopped and not cur.is_stream else 0.0,
              "playing": cur is not None and not self.engine.stopped and not self.engine.paused}
         config.save_session(s)
         self._dirty = False
@@ -1409,7 +1477,7 @@ class MainWindow(QMainWindow):
         self.tags.add(tracks)
         self._rebuild_list()
         i = int(s.get("current", -1))
-        if 0 <= i < len(tracks) and os.path.exists(tracks[i].path):
+        if 0 <= i < len(tracks) and (tracks[i].is_stream or os.path.exists(tracks[i].path)):
             play = bool(self.cfg.get("resume_play")) and bool(s.get("playing"))
             self.engine.play(tracks[i], float(s.get("position", 0) or 0), paused=not play)
             self.jump_to_current()

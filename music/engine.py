@@ -20,7 +20,7 @@ from . import audio
 from .playlist import Playlist, Track
 
 OBSERVED = ("time-pos", "duration", "pause", "audio-params", "audio-out-params", "audio-codec-name",
-            "audio-bitrate", "idle-active", "current-tracks/audio")
+            "audio-bitrate", "idle-active", "current-tracks/audio", "metadata")
 
 
 def _mpv_version(m) -> tuple[int, int]:
@@ -50,7 +50,7 @@ class Deck(QObject):
             idle="yes", keep_open="no", osc=False, input_default_bindings=False, input_vo_keyboard=False,
             config=False, terminal=False, ytdl=False, load_scripts=False,
             gapless_audio="weak", prefetch_playlist="yes", volume_max=100, volume=100,
-            audio_client_name="ArtCore Music", demuxer_max_bytes="64MiB", cache="no",
+            audio_client_name="ArtCore Music", demuxer_max_bytes="64MiB", cache="auto", network_timeout=15,
             audio_channels=audio.CHANNEL_MODES.get(cfg.get("channels", "auto"), "auto-safe"),
             replaygain=cfg.get("replaygain", "album") if cfg.get("replaygain") != "off" else "no",
             replaygain_preamp=float(cfg.get("rg_preamp", 0)),
@@ -215,6 +215,7 @@ class Engine(QObject):
     format_changed = Signal(dict)             # source / output stream info
     finished = Signal()                       # the end of the playlist
     error = Signal(str)
+    stream_title = Signal(str)                # internet radio: what is on air now (ICY), "" = unknown
 
     TICK_MS = 40
 
@@ -230,6 +231,8 @@ class Engine(QObject):
         self.stopped = True
         self.fade: dict | None = None         # {"old": Deck, "t0": time, "len": seconds}
         self.dead = False                     # shut down: late mpv events are ignored
+        self.icy = ""                         # the radio's "now playing"
+        self._reconnects = 0                  # a radio stream that dropped is opened again a few times
         self._errors = 0
         self._last_pos = (0.0, 0.0)
         self._seek_guard = 0.0
@@ -276,6 +279,9 @@ class Engine(QObject):
         self._seek_guard = time.monotonic() + 0.4
         self.deck.factor = 1.0
         self.deck.set_volume(self.volume, self.muted)
+        if self.icy:
+            self.icy = ""
+            self.stream_title.emit("")
         self.deck.load(track, offset, paused)
         self.track_changed.emit(track)
         self.paused_changed.emit(paused)
@@ -459,7 +465,7 @@ class Engine(QObject):
     def _gapless_next(self) -> Track | None:
         """What to queue in mpv after the current file (None: nothing, or crossfade / CUE takes care of it)."""
         t = self.cur
-        if t is None or t.end is not None:            # a CUE range: the boundary is handled in _on_pos
+        if t is None or t.end is not None or t.is_stream:   # a CUE range: the boundary is handled in _on_pos
             return None
         nxt = self.pl.next_after(t, auto=True)
         if nxt is None or self._xfade_len(t, nxt) > 0:
@@ -535,6 +541,9 @@ class Engine(QObject):
             return
         if d.pending and reason != "error":
             return
+        if self.cur is not None and self.cur.is_stream:     # a radio: no "next track", try to reconnect
+            self._stream_ended(d, reason, err)
+            return
         if reason == "error":
             d.pending = False
             self._errors += 1
@@ -560,6 +569,21 @@ class Engine(QObject):
             self.position.emit(0.0, self.cur.duration() if self.cur else 0.0)
             self.finished.emit()
 
+    def _stream_ended(self, d: Deck, reason: str, err: int):
+        d.pending = False
+        tr = self.cur
+        if self._reconnects < 3:
+            self._reconnects += 1
+            QTimer.singleShot(2000 * self._reconnects,
+                              lambda: self.play(tr) if self.cur is tr and not self.dead else None)
+            self.error.emit(f"{tr.display_title()}: {'mpv error ' + str(err) if reason == 'error' else 'eof'} — "
+                            f"reconnect {self._reconnects}/3")
+            return
+        self._reconnects = 0
+        self.error.emit(f"{tr.display_title()}: mpv error {err}" if reason == "error" else tr.display_title())
+        self.stop()
+        self.finished.emit()
+
     def _on_prop(self, d: Deck, name: str, val):
         if self.dead or not d.alive:
             return
@@ -579,6 +603,12 @@ class Engine(QObject):
                 if err:
                     self.error.emit(err)
             self._emit_format()
+        elif name == "metadata":
+            md = {str(k).lower(): str(v) for k, v in (val or {}).items()} if isinstance(val, dict) else {}
+            icy = md.get("icy-title", "").strip()
+            if icy != self.icy:
+                self.icy = icy
+                self.stream_title.emit(icy)
         elif name == "duration" and val:
             self._on_pos(float(self.deck.get("time-pos", 0) or 0))
 
@@ -587,6 +617,12 @@ class Engine(QObject):
         if t is None:
             return
         rel = p - t.start
+        if t.is_stream:                                # radio: the time on air; nothing to switch to
+            if rel > 15:
+                self._reconnects = 0
+            self._last_pos = (max(0.0, rel), 0.0)
+            self.position.emit(max(0.0, rel), 0.0)
+            return
         dur = self.track_length()
         self._last_pos = (max(0.0, rel), dur)
         self.position.emit(max(0.0, rel), dur)

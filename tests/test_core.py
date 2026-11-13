@@ -127,3 +127,23 @@ def test_waveform_peaks():
     assert len(p) == 10 and max(p) == 255
     assert all(v < 5 for v in p[:5]) and all(v > 250 for v in p[5:])
     assert peaks_from_pcm(b"") == b""
+
+
+def test_pls_and_radio_playlists(tmp_path):
+    from music.playlist import expand, write_m3u
+    pls = tmp_path / "radio.pls"
+    pls.write_text("[playlist]\nNumberOfEntries=2\nFile1=https://radio.example.com/live/\nTitle1=Hard FM\n"
+                   "Length1=-1\n\nfile2=http://10.0.0.1:8003/live\nlength2=-1\nversion=2\n", encoding="utf-8")
+    m3u = tmp_path / "gabber.m3u"
+    m3u.write_text("#EXTM3U\n#EXTINF:-1,Gabber.FM\nhttp://example.org/gabber\nhttp://example.org/gabber\n"
+                   "http://example.org/gabber\n", encoding="utf-8")
+    t = expand([str(pls), str(m3u), "https://other.example.net:8000/stream"])
+    assert [(x.path, x.title) for x in t] == [
+        ("https://radio.example.com/live/", "Hard FM"), ("http://10.0.0.1:8003/live", "10.0.0.1:8003/live"),
+        ("http://example.org/gabber", "Gabber.FM"), ("https://other.example.net:8000/stream",
+                                                     "other.example.net:8000/stream")]
+    assert all(x.is_stream and x.duration() == 0 for x in t)
+    out = tmp_path / "out.m3u8"
+    write_m3u(str(out), t)
+    back = expand([str(out)])
+    assert [(x.path, x.title) for x in back] == [(x.path, x.title) for x in t]
