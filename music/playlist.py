@@ -247,6 +247,8 @@ class Playlist:
         self.shuffle = False
         self._order: list[int] = []          # uids, shuffled; used when shuffle is on
         self._gone_at = 0                    # where the playing track was when it got removed
+        self._map: dict[int, Track] = {}     # uid → track
+        self.stop_after: int | None = None   # uid: the playlist stops after this track
 
     # ── lookups
     def index_of(self, t: Track | None) -> int:
@@ -258,7 +260,25 @@ class Playlist:
         return -1
 
     def by_uid(self, uid: int) -> Track | None:
-        return next((x for x in self.tracks if x.uid == uid), None)
+        return self._map.get(uid)
+
+    def _reindex(self):
+        self._map = {t.uid: t for t in self.tracks}
+
+    def has(self, t: Track) -> bool:
+        """The same file (and the same CUE range) is already in the list."""
+        key = (os.path.normcase(t.path), round(t.start, 2))
+        return any((os.path.normcase(x.path), round(x.start, 2)) == key for x in self.tracks)
+
+    def without_dups(self, new: list[Track]) -> list[Track]:
+        have = {(os.path.normcase(x.path), round(x.start, 2)) for x in self.tracks}
+        out = []
+        for t in new:
+            key = (os.path.normcase(t.path), round(t.start, 2))
+            if key not in have:
+                have.add(key)
+                out.append(t)
+        return out
 
     def _seq(self) -> list[Track]:
         if not self.shuffle:
@@ -270,6 +290,8 @@ class Playlist:
     def next_after(self, t: Track | None, auto: bool = True) -> Track | None:
         seq = self._seq()
         if not seq:
+            return None
+        if t is not None and auto and self.stop_after is not None and t.uid == self.stop_after:
             return None
         if t is not None and auto and self.repeat == "one" and self.index_of(t) >= 0:
             return t
@@ -321,6 +343,7 @@ class Playlist:
             self.tracks.extend(new)
         else:
             self.tracks[at:at] = new
+        self._map.update({t.uid: t for t in new})
         if self.shuffle:                          # new tracks go to random places after the current one
             import random
             cur = self._order.index(current.uid) + 1 if current is not None and current.uid in self._order else 0
@@ -332,16 +355,20 @@ class Playlist:
             self._gone_at = self.index_of(current)
             self._gone_at -= sum(1 for t in self.tracks[:self._gone_at] if t.uid in uids)
         self.tracks = [t for t in self.tracks if t.uid not in uids]
+        self._reindex()
         self._order = [u for u in self._order if u not in uids]
 
     def reorder(self, uids: list[int]):
         m = {t.uid: t for t in self.tracks}
-        self.tracks = [m[u] for u in uids if u in m] + [t for t in self.tracks if t.uid not in set(uids)]
+        keep = set(uids)
+        self.tracks = [m[u] for u in uids if u in m] + [t for t in self.tracks if t.uid not in keep]
 
     def clear(self):
         self.tracks = []
         self._order = []
         self._gone_at = 0
+        self._map = {}
+        self.stop_after = None
 
     def sort(self, key: str):
         keys = {

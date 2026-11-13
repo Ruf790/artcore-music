@@ -9,15 +9,19 @@ import time
 from PySide6.QtCore import QByteArray, QObject, QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QActionGroup, QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
-                               QMenu, QMessageBox, QSlider, QSplitter, QTreeWidgetItem, QVBoxLayout, QWidget)
+                               QMenu, QMessageBox, QSlider, QSplitter, QSystemTrayIcon, QTreeWidgetItem, QVBoxLayout,
+                               QWidget)
 
 from . import APP_TITLE, AUDIO_EXT, CUE_EXT, PLAYLIST_EXT, VERSION, audio, config, meta, style, winint
 from .engine import Engine
 from .i18n import t
 from .playlist import Playlist, Track, expand, fill_tags, write_m3u
-from .widgets import CoverView, PlaylistView, SeekBar, Toast, ctl_button, elide, fmt_time
+from .widgets import ClickLabel, CoverView, PlaylistView, SeekBar, Toast, ctl_button, elide, fmt_time
 
 COL_N, COL_TITLE, COL_ARTIST, COL_ALBUM, COL_LEN = range(5)
+COL_KEYS = {"n": COL_N, "artist": COL_ARTIST, "album": COL_ALBUM, "len": COL_LEN}
+ROW_PAD = {"compact": 2, "normal": 5, "large": 9}
+SLEEP_MINUTES = (15, 30, 45, 60, 90, 120)
 UID = Qt.UserRole + 1
 
 
@@ -172,6 +176,14 @@ class MainWindow(QMainWindow):
         self._thumb_icons: dict[str, int] = {}
         self._last_pos = (0.0, 0.0)
         self._dirty = False
+        self._searching = False                # the list is filtered right now
+        self._search_anchor: int | None = None  # uid to come back to when the search is cleared
+        self._quitting = False
+        self.tray: QSystemTrayIcon | None = None
+        self.sleep_until = 0.0                 # monotonic time of the sleep timer (0 = off)
+        self.sleep_timer = QTimer(self)
+        self.sleep_timer.setInterval(1000)
+        self.sleep_timer.timeout.connect(self._sleep_tick)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -192,6 +204,8 @@ class MainWindow(QMainWindow):
         self._sync_mode_buttons()
         self._sync_mute_icon()
         self._show_track(None)
+        self._apply_view_options()
+        self._setup_tray()
 
         self.save_timer = QTimer(self)
         self.save_timer.setInterval(self.SAVE_EVERY_MS)
@@ -264,7 +278,11 @@ class MainWindow(QMainWindow):
         self.search.setPlaceholderText(t("search"))
         self.search.setClearButtonEnabled(True)
         self.search.setFixedWidth(220)
-        self.search.textChanged.connect(self._filter)
+        self.search_timer = QTimer(self)
+        self.search_timer.setSingleShot(True)
+        self.search_timer.setInterval(150)
+        self.search_timer.timeout.connect(lambda: self._filter(self.search.text()))
+        self.search.textChanged.connect(self._search_changed)
         self.search.returnPressed.connect(self._play_first_visible)
         top.addWidget(self.search)
         top.addSpacing(4)
@@ -293,7 +311,9 @@ class MainWindow(QMainWindow):
         if len(cols) == 2:
             self.view.setColumnWidth(COL_ARTIST, int(cols[0]))
             self.view.setColumnWidth(COL_ALBUM, int(cols[1]))
-        self.view.itemActivated.connect(lambda it, _c: self.play_uid(it.data(0, UID)))
+        self.view.itemActivated.connect(lambda it, _c: self._activate(it))
+        hdr.setContextMenuPolicy(Qt.CustomContextMenu)
+        hdr.customContextMenuRequested.connect(self._header_menu)
         self.view.files_dropped.connect(self._dropped_on_list)
         self.view.reordered.connect(self._reordered)
         self.view.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -317,8 +337,11 @@ class MainWindow(QMainWindow):
         self.l_pos = QLabel("0:00")
         self.l_pos.setObjectName("hint")
         self.l_pos.setMinimumWidth(48)
-        self.l_dur = QLabel("0:00")
+        self.l_dur = ClickLabel("0:00")
         self.l_dur.setObjectName("hint")
+        self.l_dur.setCursor(Qt.PointingHandCursor)
+        self.l_dur.setToolTip(t("time_toggle"))
+        self.l_dur.clicked.connect(self.toggle_time_remaining)
         self.l_dur.setMinimumWidth(48)
         self.l_dur.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.seekbar = SeekBar()
@@ -375,14 +398,15 @@ class MainWindow(QMainWindow):
                 s.setContext(Qt.WindowShortcut)
                 s.activated.connect(fn)
         sc("Space", self.toggle_pause)
-        sc("Left", lambda: self.engine.seek_rel(-5))
-        sc("Right", lambda: self.engine.seek_rel(5))
-        sc("Shift+Left", lambda: self.engine.seek_rel(-30))
-        sc("Shift+Right", lambda: self.engine.seek_rel(30))
+        step = lambda k: int(self.cfg.get(k, 5))           # noqa: E731
+        sc("Left", lambda: self.engine.seek_rel(-step("seek_step")))
+        sc("Right", lambda: self.engine.seek_rel(step("seek_step")))
+        sc("Shift+Left", lambda: self.engine.seek_rel(-step("seek_step_big")))
+        sc("Shift+Right", lambda: self.engine.seek_rel(step("seek_step_big")))
         sc("Ctrl+Left", self.prev)
         sc("Ctrl+Right", self.next)
-        sc(["Ctrl+Up", "+", "="], lambda: self.vol.setValue(self.vol.value() + 5))
-        sc(["Ctrl+Down", "-"], lambda: self.vol.setValue(self.vol.value() - 5))
+        sc(["Ctrl+Up", "+", "="], lambda: self.vol.setValue(self.vol.value() + step("volume_step")))
+        sc(["Ctrl+Down", "-"], lambda: self.vol.setValue(self.vol.value() - step("volume_step")))
         sc("M", self.toggle_mute)
         sc("S", self.toggle_shuffle)
         sc("R", self.cycle_repeat)
@@ -393,6 +417,7 @@ class MainWindow(QMainWindow):
         sc("T", self.toggle_on_top)
         sc("Ctrl+F", lambda: (self.search.setFocus(), self.search.selectAll()))
         sc("Ctrl+J", self.jump_to_current)
+        sc("Ctrl+Shift+E", self.toggle_stop_after)
         sc("Delete", self.remove_selected)
         sc("Ctrl+O", self.add_files_dialog)
         sc("Ctrl+Shift+O", self.add_folder_dialog)
@@ -447,7 +472,8 @@ class MainWindow(QMainWindow):
             items.append(it)
         self.view.addTopLevelItems(items)
         self.view.setUpdatesEnabled(True)
-        self._filter(self.search.text())
+        if self.search.text().strip():
+            self._filter(self.search.text())
         self._list_changed()
 
     def _list_changed(self):
@@ -456,6 +482,7 @@ class MainWindow(QMainWindow):
         self.pl_count.setText(t("pl_count", n, fmt_time(total)) if n else "")
         self.empty.setVisible(n == 0)
         self.empty.resize(self.view.viewport().size())
+        self._fit_number_column()
         self._update_next_label()
         self._dirty = True
         self.dirty_timer.start()
@@ -474,23 +501,120 @@ class MainWindow(QMainWindow):
         if self.tags.q.empty():
             self._list_changed()
 
+    def _search_changed(self, text: str):
+        if not text.strip():                       # cleared: at once, no waiting
+            self.search_timer.stop()
+            self._filter(text)
+        else:
+            self.search_timer.start()
+
     def _filter(self, text: str):
         words = text.lower().split()
-        for uid, it in self.items.items():
-            if not words:
+        if not words:
+            if not self._searching:
+                return
+            self._searching = False
+            self.view.setUpdatesEnabled(False)
+            for it in self.items.values():
                 it.setHidden(False)
-                continue
+            self.view.setUpdatesEnabled(True)
+            self._after_search()
+            return
+        if not self._searching:
+            self._searching = True
+            self._search_anchor = None
+        in_path = bool(self.cfg.get("search_path", True))
+        self.view.setUpdatesEnabled(False)
+        for uid, it in self.items.items():
             tr = self.pl.by_uid(uid)
+            if tr is None:
+                it.setHidden(True)
+                continue
+            where = tr.path if in_path else os.path.basename(tr.path)
             hay = " ".join((tr.display_title(), tr.artist, tr.album, tr.albumartist, tr.year, tr.genre,
-                            os.path.basename(tr.path))).lower() if tr else ""
+                            where)).lower()
             it.setHidden(not all(w in hay for w in words))
+        self.view.setUpdatesEnabled(True)
+        cur = self.view.currentItem()
+        if cur is not None and not cur.isHidden():
+            self.view.scrollToItem(cur)
+        else:
+            self.view.scrollToTop()
+
+    def _after_search(self):
+        """The search was cleared: show the track picked or played from the results, else the playing one —
+        not the top of the list."""
+        uid = self._search_anchor
+        if uid is None:
+            cur = self.view.currentItem()
+            if cur is not None and cur.isSelected():
+                uid = cur.data(0, UID)
+        if uid is None and self.engine.cur is not None:
+            uid = self.engine.cur.uid
+        self._search_anchor = None
+        it = self.items.get(uid) if uid is not None else None
+        if it is None:
+            return
+        self.view.setCurrentItem(it)
+        # the rows have just come back: scroll once the view has laid them out again
+        QTimer.singleShot(0, lambda: self.view.scrollToItem(it, PlaylistView.PositionAtCenter)
+                          if self.items.get(uid) is it else None)
+
+    def _activate(self, it: QTreeWidgetItem):
+        uid = it.data(0, UID)
+        if self._searching:
+            self._search_anchor = uid
+        self.play_uid(uid)
+        if self._searching and self.cfg.get("search_clear_on_play"):
+            self.search.clear()
 
     def _play_first_visible(self):
+        cur = self.view.currentItem()
+        if cur is not None and not cur.isHidden() and cur.isSelected():
+            self._activate(cur)
+            return
         for i in range(self.view.topLevelItemCount()):
             it = self.view.topLevelItem(i)
             if not it.isHidden():
-                self.play_uid(it.data(0, UID))
+                self.view.setCurrentItem(it)
+                self._activate(it)
                 return
+
+    def _fit_number_column(self):
+        """Wide enough for the playing icon and the longest track number (it showed «…» from 10 on)."""
+        longest = max((len(tr.number or "") for tr in self.pl.tracks), default=1)
+        fm = self.view.fontMetrics()
+        w = 16 + 10 + fm.horizontalAdvance("8" * max(2, min(longest, 7))) + 14
+        if self.view.columnWidth(COL_N) != w:
+            self.view.setColumnWidth(COL_N, w)
+
+    def _apply_view_options(self):
+        pad = ROW_PAD.get(self.cfg.get("row_size", "normal"), 5)
+        self.view.setStyleSheet(f"QTreeWidget#playlist::item {{ padding: {pad}px 4px; border: none; }}")
+        hidden = set(self.cfg.get("hidden_cols") or [])
+        for key, col in COL_KEYS.items():
+            self.view.setColumnHidden(col, key in hidden)
+        if self._searching:
+            self._filter(self.search.text())
+
+    def _header_menu(self, pos):
+        m = QMenu(self)
+        hidden = set(self.cfg.get("hidden_cols") or [])
+        names = {"n": "#", "artist": t("col_artist"), "album": t("col_album"), "len": t("col_len")}
+        for key, name in names.items():
+            a = m.addAction(name)
+            a.setCheckable(True)
+            a.setChecked(key not in hidden)
+            a.triggered.connect(lambda on, k=key: self._set_column(k, on))
+        m.exec(self.view.header().mapToGlobal(pos))
+
+    def _set_column(self, key: str, on: bool):
+        hidden = [c for c in (self.cfg.get("hidden_cols") or []) if c != key]
+        if not on:
+            hidden.append(key)
+        self.cfg["hidden_cols"] = hidden
+        self._apply_view_options()
+        config.save(self.cfg)
 
     def _reordered(self):
         uids = [self.view.topLevelItem(i).data(0, UID) for i in range(self.view.topLevelItemCount())]
@@ -538,7 +662,12 @@ class MainWindow(QMainWindow):
             self.engine.requeue()
         self.toast.show_text(t("removed_n", len(gone)))
 
-    def clear_playlist(self):
+    def clear_playlist(self, confirm: bool = True):
+        if confirm and self.pl.tracks and self.cfg.get("confirm_clear", True):
+            r = QMessageBox.question(self, APP_TITLE, t("clear_confirm", len(self.pl.tracks)),
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if r != QMessageBox.Yes:
+                return
         self.engine.stop()
         self.engine.cur = None
         self.pl.clear()
@@ -550,6 +679,7 @@ class MainWindow(QMainWindow):
         it = self.items.get(cur.uid) if cur else None
         if it is not None:
             if it.isHidden():
+                self._search_anchor = cur.uid
                 self.search.clear()
             self.view.setCurrentItem(it)
             self.view.scrollToItem(it, PlaylistView.PositionAtCenter)
@@ -567,11 +697,24 @@ class MainWindow(QMainWindow):
                             lambda p=tr.path: winint.show_in_explorer(p))
             m.addSeparator()
         m.addAction(style.icon("fa6s.crosshairs"), t("jump") + "\tCtrl+J", self.jump_to_current)
+        if it is not None:
+            uid = it.data(0, UID)
+            a = m.addAction(style.icon("fa6s.circle-stop"), t("stop_after_this"),
+                            lambda u=uid: self.set_stop_after(None if self.pl.stop_after == u else u))
+            a.setCheckable(True)
+            a.setChecked(self.pl.stop_after == uid)
         sm = m.addMenu(style.icon("fa6s.arrow-down-a-z"), t("sort"))
         for key in ("path", "artist", "album", "title", "length"):
             sm.addAction(t("sort_" + key), lambda k=key: self.sort_playlist(k))
         m.addAction(style.icon("fa6s.broom"), t("remove_missing"), self.remove_missing)
         m.addAction(style.icon("fa6s.trash-can"), t("clear_pl"), self.clear_playlist)
+        cm = m.addMenu(style.icon("fa6s.table-columns"), t("columns"))
+        hidden = set(self.cfg.get("hidden_cols") or [])
+        for key, name in (("n", "#"), ("artist", t("col_artist")), ("album", t("col_album")), ("len", t("col_len"))):
+            a = cm.addAction(name)
+            a.setCheckable(True)
+            a.setChecked(key not in hidden)
+            a.triggered.connect(lambda on, k=key: self._set_column(k, on))
         m.exec(self.view.viewport().mapToGlobal(pos))
 
     # ── adding ────────────────────────────────────────────────
@@ -584,6 +727,11 @@ class MainWindow(QMainWindow):
         if not add:
             self.engine.stop()
             self.pl.clear()
+        elif self.cfg.get("skip_dups", True):
+            tracks = self.pl.without_dups(tracks)
+            if not tracks:
+                self.toast.show_text(t("already_in"), 2000)
+                return
         self.pl.add(tracks, current=self.engine.cur)
         if self.pl.shuffle and not add:
             self.pl.reshuffle(tracks[0])
@@ -598,6 +746,11 @@ class MainWindow(QMainWindow):
 
     def add_paths(self, paths: list[str], row: int = -1):
         tracks = expand(paths)
+        if tracks and self.cfg.get("skip_dups", True):
+            tracks = self.pl.without_dups(tracks)
+            if not tracks:
+                self.toast.show_text(t("already_in"), 2000)
+                return
         if not tracks:
             return
         self.pl.add(tracks, at=row, current=self.engine.cur)
@@ -696,7 +849,8 @@ class MainWindow(QMainWindow):
 
     def prev(self):
         pos, _ = self._last_pos
-        if pos > 3 and self.engine.cur is not None and not self.engine.stopped:
+        limit = int(self.cfg.get("prev_restart", 3))
+        if limit and pos > limit and self.engine.cur is not None and not self.engine.stopped:
             self.engine.seek(0)
             return
         prv = self.pl.prev_before(self.engine.cur)
@@ -765,8 +919,11 @@ class MainWindow(QMainWindow):
                     tr.tagged = True
             self._refresh_item(tr.uid)
             it = self.items.get(tr.uid)
-            if it is not None and not self.view.underMouse():
+            if it is not None and not it.isHidden() and not self.view.underMouse() \
+                    and self.cfg.get("follow_playing", True):
                 self.view.scrollToItem(it)
+            if prev_uid != tr.uid:
+                self._notify(tr)
         self._show_track(tr)
         self._dirty = True
 
@@ -805,6 +962,9 @@ class MainWindow(QMainWindow):
 
     def _update_next_label(self):
         cur = self.engine.cur
+        if cur is not None and not self.engine.stopped and self.pl.stop_after == cur.uid:
+            self.t_next.setText(t("up_next_stop"))
+            return
         nxt = self.pl.next_after(cur, auto=True) if cur is not None and not self.engine.stopped else None
         self.t_next.setText(t("up_next", nxt.display()) if nxt is not None and nxt.uid != cur.uid else
                             (t("up_next_repeat") if nxt is not None else ""))
@@ -818,7 +978,8 @@ class MainWindow(QMainWindow):
             self.dirty_timer.start()
         self.seekbar.set_state(pos, dur)
         self.l_pos.setText(fmt_time(pos))
-        self.l_dur.setText(fmt_time(dur))
+        self.l_dur.setText("−" + fmt_time(max(0.0, dur - pos)) if self.cfg.get("time_remaining") and dur
+                           else fmt_time(dur))
         if self.mini is not None and self.mini.isVisible():
             self.mini.seek.set_state(pos, dur)
             self.mini.time.setText(f"{fmt_time(pos)} / {fmt_time(dur)}")
@@ -867,10 +1028,114 @@ class MainWindow(QMainWindow):
         self.t_format.show()
 
     def _on_finished(self):
+        if self.pl.stop_after is not None:
+            self.pl.stop_after = None
+            self.toast.show_text(t("stopped_after"), 2000)
         if self.engine.cur is not None:
             self._refresh_item(self.engine.cur.uid)
         self._update_next_label()
         self._thumb_update()
+
+    # ── stop after, sleep timer, time label ───────────────────
+    def set_stop_after(self, uid: int | None):
+        self.pl.stop_after = uid
+        self.engine.requeue()
+        self._update_next_label()
+        tr = self.pl.by_uid(uid) if uid is not None else None
+        self.toast.show_text(t("stop_after_on", tr.display_title()) if tr else t("stop_after_off"), 1600)
+
+    def toggle_stop_after(self):
+        cur = self.engine.cur
+        if cur is None:
+            return
+        self.set_stop_after(None if self.pl.stop_after == cur.uid else cur.uid)
+
+    def set_sleep(self, minutes: int):
+        """0 = off; the music fades out and pauses when the time is up."""
+        if minutes <= 0:
+            self._sleep_off()
+            self.toast.show_text(t("sleep_off"), 1300)
+            return
+        self.sleep_until = time.monotonic() + minutes * 60
+        self.sleep_timer.start()
+        self.toast.show_text(t("sleep_on", minutes), 1600)
+
+    def _sleep_off(self):
+        self.sleep_until = 0.0
+        self.sleep_timer.stop()
+
+    def _sleep_left(self) -> int:
+        return max(0, int(self.sleep_until - time.monotonic())) if self.sleep_until else 0
+
+    def _sleep_tick(self):
+        if not self.sleep_until:
+            self.sleep_timer.stop()
+            return
+        if time.monotonic() >= self.sleep_until:
+            self._sleep_off()
+            if not self.engine.stopped and not self.engine.paused:
+                keep = self.cfg.get("fade_pause", 0)
+                self.cfg["fade_pause"] = max(int(keep or 0), 3000)      # a long, gentle fade for the night
+                self.engine.set_paused(True)
+                self.cfg["fade_pause"] = keep
+            self.toast.show_text(t("sleep_done"), 2500)
+
+    def toggle_time_remaining(self):
+        self.cfg["time_remaining"] = not self.cfg.get("time_remaining")
+        self._on_pos(*self._last_pos)
+
+    # ── tray ──────────────────────────────────────────────────
+    def _setup_tray(self):
+        want = bool(self.cfg.get("tray")) and QSystemTrayIcon.isSystemTrayAvailable()
+        if want and self.tray is None:
+            self.tray = QSystemTrayIcon(style.app_icon(), self)
+            self.tray.setToolTip(APP_TITLE)
+            m = QMenu(self)
+            m.addAction(style.icon("fa6s.play"), t("play") + " / " + t("pause"), self.toggle_pause)
+            m.addAction(style.icon("fa6s.forward-step"), t("next"), self.next)
+            m.addAction(style.icon("fa6s.backward-step"), t("prev"), self.prev)
+            m.addAction(style.icon("fa6s.stop"), t("stop"), self.stop)
+            m.addSeparator()
+            m.addAction(style.icon("fa6s.window-maximize"), t("tray_show"), self.show_from_tray)
+            m.addAction(style.icon("fa6s.power-off"), t("quit"), self.quit)
+            self.tray.setContextMenu(m)
+            self.tray.activated.connect(self._tray_click)
+            self.tray.show()
+        elif not want and self.tray is not None:
+            self.tray.hide()
+            self.tray.deleteLater()
+            self.tray = None
+
+    def _tray_click(self, reason):
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            if self.isVisible() and not self.isMinimized() and self.isActiveWindow():
+                self.hide()
+            else:
+                self.show_from_tray()
+        elif reason == QSystemTrayIcon.MiddleClick:
+            self.toggle_pause()
+
+    def show_from_tray(self):
+        if self.mini is not None and self.mini.isVisible():
+            self.mini.raise_()
+            return
+        self.showNormal() if self.isMinimized() else self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _notify(self, tr: Track):
+        if self.tray is not None:
+            self.tray.setToolTip(f"{tr.display()} — {APP_TITLE}"[:120])
+        if not self.cfg.get("notify") or self.tray is None or self.isActiveWindow():
+            return
+        sub = " · ".join(b for b in (tr.artist or tr.albumartist, tr.album) if b)
+        self.tray.showMessage(tr.display_title(), sub or APP_TITLE, style.app_icon(), 3500)
+
+    def quit(self):
+        self._quitting = True
+        if self.mini is not None and self.mini.isVisible():
+            self.mini.hide()
+        self.close()
 
     # ── sound ─────────────────────────────────────────────────
     def apply_audio(self):
@@ -972,6 +1237,25 @@ class MainWindow(QMainWindow):
             g3.addAction(a)
         m.addAction(style.icon("fa6s.sliders"), t("equalizer") + "\tE", self.equalizer_dialog)
         m.addSeparator()
+        cur = self.engine.cur
+        a = m.addAction(style.icon("fa6s.circle-stop"), t("stop_after_cur") + "\tCtrl+Shift+E", self.toggle_stop_after)
+        a.setCheckable(True)
+        a.setChecked(cur is not None and self.pl.stop_after == cur.uid)
+        a.setEnabled(cur is not None)
+        left = self._sleep_left()
+        sl = m.addMenu(style.icon("fa6s.moon"), t("sleep") + (f"  ({fmt_time(left)})" if left else ""))
+        g4 = QActionGroup(sl)
+        a = sl.addAction(t("sleep_none"))
+        a.setCheckable(True)
+        a.setChecked(not left)
+        a.triggered.connect(lambda: self.set_sleep(0))
+        g4.addAction(a)
+        for mins in SLEEP_MINUTES:
+            a = sl.addAction(t("sleep_min", mins))
+            a.setCheckable(True)
+            a.triggered.connect(lambda _=False, n=mins: self.set_sleep(n))
+            g4.addAction(a)
+        m.addSeparator()
         a = m.addAction(style.icon("fa6s.clone"), t("mini") + "\tCtrl+M", self.toggle_mini)
         a = m.addAction(style.icon("fa6s.thumbtack"), t("on_top") + "\tT", self.toggle_on_top)
         a.setCheckable(True)
@@ -981,6 +1265,9 @@ class MainWindow(QMainWindow):
         m.addAction(style.icon("fa6s.keyboard"), t("keys") + "\tF1", self.keys_dialog)
         m.addAction(style.icon("fa6s.circle-arrow-up"), t("upd_check_now"), lambda: self.check_updates(True))
         m.addAction(style.icon("fa6s.circle-info"), t("about"), self.about)
+        if self.tray is not None:
+            m.addSeparator()
+            m.addAction(style.icon("fa6s.power-off"), t("quit"), self.quit)
         btn = self.b_menu
         sh = m.sizeHint()
         p = btn.mapToGlobal(btn.rect().topRight())
@@ -1002,6 +1289,9 @@ class MainWindow(QMainWindow):
         d = SettingsDialog(self.cfg, self)
         if d.exec():
             config.save(self.cfg)
+            self._apply_view_options()
+            self._setup_tray()
+            self._on_pos(*self._last_pos)
             if keys != self.cfg.get("media_keys"):
                 self._media_keys(bool(self.cfg.get("media_keys")))
             if top != self.cfg.get("on_top"):
@@ -1086,7 +1376,8 @@ class MainWindow(QMainWindow):
         self._rebuild_list()
         i = int(s.get("current", -1))
         if 0 <= i < len(tracks) and os.path.exists(tracks[i].path):
-            self.engine.play(tracks[i], float(s.get("position", 0) or 0), paused=True)
+            play = bool(self.cfg.get("resume_play")) and bool(s.get("playing"))
+            self.engine.play(tracks[i], float(s.get("position", 0) or 0), paused=not play)
             self.jump_to_current()
         return True
 
@@ -1150,7 +1441,7 @@ class MainWindow(QMainWindow):
         d = UpdateDialog(info, self)
         if d.exec() and d.path:
             self._installer = d.path
-            self.close()
+            self.quit()
 
     # ── Windows: media keys, taskbar buttons ──────────────────
     def _media_keys(self, on: bool):
@@ -1214,6 +1505,15 @@ class MainWindow(QMainWindow):
         self.empty.resize(self.view.viewport().size())
 
     def closeEvent(self, e):
+        if self.tray is not None and self.cfg.get("close_to_tray") and not self._quitting \
+                and not getattr(self, "_installer", ""):
+            e.ignore()
+            self.hide()
+            self.save_session()
+            if not self.cfg.get("tray_hint_shown"):
+                self.cfg["tray_hint_shown"] = True
+                self.tray.showMessage(APP_TITLE, t("tray_hint"), style.app_icon(), 3000)
+            return
         self.save_session()
         if not self.isFullScreen():
             self.cfg["geometry"] = bytes(self.saveGeometry().toBase64()).decode()
@@ -1226,6 +1526,9 @@ class MainWindow(QMainWindow):
         self.tags.stop()
         winint.unregister_media_keys(int(self.winId()), self._hotkeys)
         self.engine.shutdown()
+        self.sleep_timer.stop()
+        if self.tray is not None:
+            self.tray.hide()
         if self.mini is not None:
             self.mini.deleteLater()
         installer = getattr(self, "_installer", "")

@@ -337,6 +337,15 @@ class PlaylistView(QTreeWidget):
         self.reordered.emit()
 
 
+class ClickLabel(QLabel):
+    clicked = Signal()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(e)
+
+
 def elide(label: QLabel, text: str, width: int | None = None):
     fm = label.fontMetrics()
     w = width if width is not None else max(40, label.width())
