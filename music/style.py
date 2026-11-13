@@ -1,7 +1,7 @@
 """Colours, the app icon and the dark style sheet."""
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPainterPath, QPixmap
 
 ACCENT = "#0d6efd"
@@ -60,33 +60,79 @@ def icon(name: str, color: str = TEXT):
 
 
 def app_icon_pixmap(size: int = 256) -> QPixmap:
-    """Rounded square, blue → purple, a white eighth-note pair (the ArtCore family look, music edition)."""
+    """A rounded square, blue → purple → pink with a gloss on top, a white pair of eighth notes with a soft
+    shadow and, from 32 px up, a sound wave under it (the seek bar of the player)."""
+    from PySide6.QtGui import QPen
     pm = QPixmap(size, size)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
-    r = QRectF(size * 0.04, size * 0.04, size * 0.92, size * 0.92)
-    g = QLinearGradient(r.topLeft(), r.bottomRight())
-    g.setColorAt(0, QColor(ACCENT))
-    g.setColorAt(1, QColor(ACCENT2))
-    p.setPen(Qt.NoPen)
-    p.setBrush(g)
-    p.drawRoundedRect(r, size * 0.22, size * 0.22)
-    p.setBrush(QColor("#ffffff"))
     s = size / 256.0
-    # two note heads
-    p.save(); p.translate(86 * s, 182 * s); p.rotate(-22); p.drawEllipse(QRectF(-30 * s, -21 * s, 60 * s, 42 * s)); p.restore()
-    p.save(); p.translate(182 * s, 160 * s); p.rotate(-22); p.drawEllipse(QRectF(-30 * s, -21 * s, 60 * s, 42 * s)); p.restore()
-    # stems and the beam
-    p.drawRect(QRectF(101 * s, 66 * s, 15 * s, 116 * s))
-    p.drawRect(QRectF(197 * s, 46 * s, 15 * s, 114 * s))
-    beam = QPainterPath()
-    beam.moveTo(QPointF(101 * s, 66 * s))
-    beam.lineTo(QPointF(212 * s, 40 * s))
-    beam.lineTo(QPointF(212 * s, 78 * s))
-    beam.lineTo(QPointF(101 * s, 104 * s))
-    beam.closeSubpath()
-    p.drawPath(beam)
+    r = QRectF(8 * s, 8 * s, 240 * s, 240 * s)
+
+    def tile(rect: QRectF) -> QPainterPath:
+        path = QPainterPath()
+        path.addRoundedRect(rect, rect.width() * 0.235, rect.height() * 0.235)
+        return path
+
+    p.setPen(Qt.NoPen)
+    if size >= 32:                                       # a soft shadow under the tile
+        for i, a in enumerate((26, 18, 10)):
+            p.setBrush(QColor(0, 0, 0, a))
+            p.drawPath(tile(r.translated(0, (3 + i * 2) * s)))
+    body = tile(r)
+    g = QLinearGradient(r.topLeft(), r.bottomRight())
+    g.setColorAt(0, QColor("#1f6bff"))
+    g.setColorAt(0.55, QColor("#7a3cf0"))
+    g.setColorAt(1, QColor("#e83e8c"))
+    p.setBrush(g)
+    p.drawPath(body)
+    p.save()                                             # the gloss
+    p.setClipPath(body)
+    gl = QLinearGradient(0, r.top(), 0, r.top() + r.height() * 0.55)
+    gl.setColorAt(0, QColor(255, 255, 255, 70))
+    gl.setColorAt(1, QColor(255, 255, 255, 0))
+    p.setBrush(gl)
+    p.drawEllipse(QRectF(r.left() - 40 * s, r.top() - 150 * s, r.width() + 80 * s, 260 * s))
+    p.restore()
+    if size >= 32:
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(255, 255, 255, 50), max(1.0, 2 * s)))
+        p.drawPath(tile(r.adjusted(1.5 * s, 1.5 * s, -1.5 * s, -1.5 * s)))
+        p.setPen(Qt.NoPen)
+    wave = size >= 32
+    cx, cy, k = (122, 112, 1.0) if wave else (124, 128, 1.12)
+
+    def notes(color: QColor, dy: float = 0.0):
+        p.save()
+        p.translate(cx * s, (cy + dy) * s)
+        p.scale(k * s, k * s)
+        p.setBrush(color)
+        for hx, hy in ((-46, 44), (40, 30)):
+            p.save()
+            p.translate(hx, hy)
+            p.rotate(-24)
+            p.drawEllipse(QRectF(-24, -17, 48, 34))
+            p.restore()
+        p.drawRoundedRect(QRectF(-32, -62, 11, 106), 3, 3)
+        p.drawRoundedRect(QRectF(54, -76, 11, 106), 3, 3)
+        beam = QPainterPath()
+        beam.moveTo(-32, -62)
+        beam.lineTo(65, -86)
+        beam.lineTo(65, -58)
+        beam.lineTo(-32, -34)
+        beam.closeSubpath()
+        p.drawPath(beam)
+        p.restore()
+
+    if size >= 24:
+        notes(QColor(0, 0, 0, 55), 5)
+    notes(QColor("#ffffff"))
+    if wave:
+        for i, h in enumerate((0.35, 0.6, 0.9, 0.55, 1.0, 0.7, 0.45, 0.8, 0.5, 0.3)):
+            hh = 34 * h
+            p.setBrush(QColor(255, 255, 255, 200 if i < 5 else 120))
+            p.drawRoundedRect(QRectF((62 + i * 14) * s, (208 - hh / 2) * s, 7 * s, hh * s), 3.5 * s, 3.5 * s)
     p.end()
     return pm
 
