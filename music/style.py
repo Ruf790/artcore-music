@@ -31,9 +31,17 @@ def stylesheet() -> str:
     return QSS.replace("%CHECK%", _check_png())
 
 
+_icons: dict = {}
+
+
 def icon(name: str, color: str = TEXT):
-    import qtawesome as qta
-    return qta.icon(name, color=color)
+    """qtawesome icon, cached (a playlist row asks for two of them; 1000+ rows)."""
+    k = (name, color)
+    ic = _icons.get(k)
+    if ic is None:
+        import qtawesome as qta
+        ic = _icons[k] = qta.icon(name, color=color)
+    return ic
 
 
 def app_icon_pixmap(size: int = 256) -> QPixmap:

@@ -92,7 +92,8 @@ class SettingsDialog(QDialog):
         cols = QHBoxLayout()
         self.cols: dict[str, QCheckBox] = {}
         hidden = set(cfg.get("hidden_cols") or [])
-        for key, name in (("n", "#"), ("artist", t("col_artist")), ("album", t("col_album")), ("len", t("col_len"))):
+        for key, name in (("n", "#"), ("artist", t("col_artist")), ("album", t("col_album")), ("len", t("col_len")),
+                          ("fav", "★")):
             cb = QCheckBox(name)
             cb.setChecked(key not in hidden)
             self.cols[key] = cb
@@ -458,7 +459,9 @@ KEYS = [
     ("Ctrl + ← / →", "k_prevnext"), ("Ctrl + ↑ / ↓,  + / −", "k_volume"), ("M", "k_mute"), ("S", "k_shuffle"),
     ("R", "k_repeat"), ("E", "k_eq"), ("Ctrl + P", "k_sound"), ("Ctrl + T", "k_test"), ("Ctrl + M", "k_mini"),
     ("T", "k_ontop"), ("Ctrl + F", "k_find"), ("Ctrl + J", "k_jump"), ("Ctrl + Shift + E", "k_stop_after"), ("Del", "k_delete"),
-    ("Ctrl + O", "k_open"), ("Ctrl + Shift + O", "k_open_folder"), ("Ctrl + U", "k_url"), ("Ctrl + L", "k_load_pl"),
+    ("Ctrl + O", "k_open"), ("Ctrl + Shift + O", "k_open_folder"), ("Ctrl + U", "k_url"),
+    ("Ctrl + N / W / Tab", "k_tabs"), ("Ctrl + Q / Shift + Q", "k_queue"), ("Ctrl + D", "k_fav"),
+    ("Ctrl + B / H", "k_library"), ("F2", "k_tags"), ("Ctrl + L", "k_load_pl"),
     ("Ctrl + S", "k_save_pl"), ("Ctrl + ,", "k_settings"), ("⏮ ⏯ ⏭ ⏹", "k_media"), ("F1", "k_keys"),
 ]
 

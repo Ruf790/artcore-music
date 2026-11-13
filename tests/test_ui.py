@@ -82,7 +82,7 @@ def test_session_resume(qapp, mpvmod, media, data_dir):
     pump(qapp, 0.3)
     w.close()
     s = config.load_session()
-    assert len(s["tracks"]) == 3 and s["current"] == 1 and s["position"] >= 1.0
+    assert len(s["tabs"][0]["tracks"]) == 3 and s["current"] == 1 and s["position"] >= 1.0
     w2 = _win(mpvmod)
     assert w2.restore_session()
     assert pump(qapp, 3, lambda: w2.engine.cur is not None and w2._last_pos[0] >= 1.0)
@@ -144,10 +144,10 @@ def test_stop_after_dups_and_settings(qapp, mpvmod, media, data_dir):
     assert len(w.pl.tracks) == n
     cur = w.engine.cur
     w.toggle_stop_after()
-    assert w.pl.stop_after == cur.uid and w.pl.next_after(cur, auto=True) is None
-    assert w.pl.next_after(cur, auto=False) is not None             # ⏭ still works
+    assert w.engine.stop_after == cur.uid and w.engine.next_track(cur, auto=True) is None
+    assert w.engine.next_track(cur, auto=False) is not None         # ⏭ still works
     w.toggle_stop_after()
-    assert w.pl.stop_after is None
+    assert w.engine.stop_after is None
     w.set_sleep(15)
     assert 14 * 60 < w._sleep_left() <= 15 * 60
     w.set_sleep(0)
@@ -229,3 +229,72 @@ def test_internet_radio(qapp, mpvmod, media, data_dir, icy_server, tmp_path):
     assert pump(qapp, 25, lambda: w.engine.stopped)                 # 3 reconnects, then it stops
     assert any("reconnect 1/3" in e for e in errors)
     w.close()
+
+
+def test_queue_play_next(qapp, mpvmod, media, data_dir):
+    w = _win(mpvmod, confirm_clear=False)
+    w.open_paths([os.path.join(media, "Stereo Album"), os.path.join(media, "Misc")])
+    pump(qapp, 0.5)
+    tr = w.pl.tracks
+    assert w.engine.cur is tr[0]
+    w.engine.enqueue([tr[4]])
+    w.engine.enqueue([tr[2]], front=True)
+    assert [x.uid for x in w.engine.queue] == [tr[2].uid, tr[4].uid]
+    assert w.items[tr[2].uid].text(0) == "1" and w.items[tr[4].uid].text(0) == "2"
+    assert "Далее" in w.t_next.text() and tr[2].display_title() in w.t_next.text()
+    w.next()
+    assert w.engine.cur is tr[2] and [x.uid for x in w.engine.queue] == [tr[4].uid]
+    w.next()
+    assert w.engine.cur is tr[4] and not w.engine.queue
+    w.next()                                    # the queue is over: the playlist goes on after tr[0]
+    assert w.engine.cur is tr[1]
+    # queue from the context menu path, then remove a queued track from the playlist
+    w.view.clearSelection()
+    w.items[tr[3].uid].setSelected(True)
+    w.queue_selected(front=True)
+    assert w.engine.queue == [tr[3]]
+    w.remove_selected()
+    assert not w.engine.queue
+    w.close()
+
+
+def test_tabs_favorites_history(qapp, mpvmod, media, data_dir):
+    w = _win(mpvmod, confirm_clear=False)
+    w.open_paths([os.path.join(media, "Stereo Album")])
+    pump(qapp, 0.4)
+    first = w.pl
+    p2 = w.new_tab("Jungle")
+    assert w.pl is p2 and w.tabbar.count() == 2 and w.tabbar.tabText(1) == "Jungle"
+    w.add_paths([os.path.join(media, "CUE Album")])                  # into the shown tab; first keeps playing
+    assert len(p2.tracks) == 3 and w.engine.pl is first
+    w.play_uid(p2.tracks[1].uid)
+    assert w.engine.pl is p2 and w.engine.cur is p2.tracks[1]
+    w.tabbar.setCurrentIndex(0)                                      # look at another tab: playback stays
+    assert w.pl is first and w.engine.pl is p2
+    w.next()
+    assert w.engine.cur is p2.tracks[2]
+    w.jump_to_current()
+    assert w.pl is p2
+    # favourites
+    w.view.clearSelection()
+    w.items[p2.tracks[0].uid].setSelected(True)
+    w.toggle_fav_selected()
+    assert w.favs.has(p2.tracks[0])
+    w.open_library_tab("favorites")
+    assert w.pl.kind == "favorites" and len(w.pl.tracks) == 1
+    assert w.pl.tracks[0].title == p2.tracks[0].title
+    w.open_library_tab("history")
+    titles = [x.title for x in w.pl.tracks]
+    assert titles[:2] == [p2.tracks[2].title, p2.tracks[1].title]     # newest first
+    w.close()
+    s = config.load_session()
+    assert [x["name"] for x in s["tabs"]][:2] == [first.name, "Jungle"] and s["playing_tab"] == 1
+    w2 = _win(mpvmod, confirm_clear=False)
+    assert w2.restore_session()
+    assert w2.tabbar.count() == 4 and w2.engine.pl is w2.pls[1] and w2.engine.cur.title == p2.tracks[2].title
+    assert w2.favs.has(w2.pls[1].tracks[0])
+    fav_tab = next(p for p in w2.pls if p.kind == "favorites")
+    assert len(fav_tab.tracks) == 1                                  # library tabs are filled from the store
+    w2.close_tab(1)                                                  # the playing tab: playback stops
+    assert w2.tabbar.count() == 3 and w2.engine.cur is None
+    w2.close()
