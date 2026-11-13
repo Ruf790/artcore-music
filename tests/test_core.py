@@ -117,3 +117,13 @@ def test_testtone_header(tmp_path):
     fmt_tag, nch, rate = struct.unpack("<HHI", raw[20:28])
     mask = struct.unpack("<I", raw[40:44])[0]
     assert (fmt_tag, nch, rate, mask) == (0xFFFE, 6, 48000, 0x3F)
+
+
+def test_waveform_peaks():
+    from array import array
+    from music.waveform import peaks_from_pcm
+    quiet, loud = array("h", [100, -100] * 500), array("h", [20000, -20000] * 500)
+    p = peaks_from_pcm((quiet + loud).tobytes(), 10)
+    assert len(p) == 10 and max(p) == 255
+    assert all(v < 5 for v in p[:5]) and all(v > 250 for v in p[5:])
+    assert peaks_from_pcm(b"") == b""
