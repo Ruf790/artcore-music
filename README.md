@@ -14,7 +14,7 @@
 - **Обложки и теги:** из тегов (ID3, Vorbis, MP4, APEv2) или `cover.jpg` / `folder.jpg` / `front.jpg` рядом с файлом; исполнитель, альбом, год, номер трека.
 - **Плейлист:** папки (рекурсивно), перетаскивание, перестановка мышью, поиск, сортировка, повтор (трек / всё), перемешивание, `.m3u` / `.m3u8` (открыть и сохранить). Плейлист, трек и место в треке возвращаются при следующем запуске.
 - **Плейлисты во вкладках**, очередь «Играть следующим», ★ избранное и «Недавно играли», волна трека вместо полосы перемотки, **тексты песен** (`.lrc` с подсветкой строки, `.txt` или из тегов), **редактор тегов** (в том числе для многих файлов и из имени файла), **интернет-радио** (`.pls`, `.m3u`, ссылки; «сейчас в эфире»).
-- **Удобство:** карточка Windows с обложкой и ⏮ ⏯ ⏭ (над громкостью и на экране блокировки), мини-плеер поверх окон (карточка или полоска, полупрозрачный, с волной), уровни по каналам 5.1 (под обложкой и вид комнаты — V), медиаклавиши клавиатуры (и в фоне), кнопки ⏮ ⏯ ⏭ в превью на панели задач, трей, таймер сна, горячие клавиши (F1 — список), RU / EN, тёмный стиль ArtCore.
+- **Удобство:** карточка Windows с обложкой и ⏮ ⏯ ⏭ (над громкостью и на экране блокировки), мини-плеер поверх окон (карточка или полоска, полупрозрачный, с волной), уровни по каналам 5.1 (под обложкой и вид комнаты — V), медиаклавиши клавиатуры (и в фоне), кнопки ⏮ ⏯ ⏭ в превью на панели задач, трей, таймер сна, горячие клавиши (F1 — список), RU / EN, **скины**: тёмный ArtCore и четыре светлых — Светлый, Бумага, Мята, Сакура (меню ☰ → Скин или Настройки; применяется сразу).
 - **Установщик:** «Открыть с помощью» для аудиофайлов, `.cue`, `.m3u`, `.pls` — у каждого формата своя иконка; регистрация в Settings → Apps → Default apps; пункты «Воспроизвести / Добавить в ArtCore Music» в меню папок. Автообновление с GitHub Releases. Есть portable-версия.
 
 ## Настройка 5.1 (Sound Blaster Z + DTS Connect)
@@ -40,7 +40,7 @@
 - **CUE album images** split into tracks (UTF-8 / cp1251, embedded CUESHEET), seamless inside the image.
 - **5.1** as multichannel PCM over WASAPI; channel mode (as in Windows / always 5.1 with 7.1 mixed down / stereo), centre and subwoofer levels, optional stereo → 5.1 upmix, a speaker test, and a format line like `FLAC 24/96 5.1 → PCM 6 ch`.
 - Equalizer, ReplayGain, gapless playback, crossfade; cover art and tags; playlists with folders, drag & drop, repeat, shuffle, M3U/M3U8, resume on the next start.
-- Mini player (card or strip, translucent, with the waveform), 5.1 channel level meters (under the cover and a room view — V), global media keys, ⏮ ⏯ ⏭ in the taskbar preview, shortcuts (F1), Russian / English, the ArtCore dark style.
+- Mini player (card or strip, translucent, with the waveform), 5.1 channel level meters (under the cover and a room view — V), global media keys, ⏮ ⏯ ⏭ in the taskbar preview, shortcuts (F1), Russian / English, **skins**: the ArtCore dark style and four light ones — Light, Paper, Mint, Sakura (menu ☰ → Skin, or Settings; applied at once).
 - Installer with "Open with", Default apps registration and a folder menu; self-update from GitHub Releases; a portable zip.
 
 License: GNU GPL v3. Third-party components: [THIRD-PARTY.md](THIRD-PARTY.md).

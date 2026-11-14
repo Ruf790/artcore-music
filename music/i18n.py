@@ -232,6 +232,9 @@ STRINGS = {
     # settings
     "settings":       ("Настройки", "Settings"),
     "language":       ("Язык", "Language"),
+    "theme":          ("Скин", "Skin"),
+    "theme_hint":     ("Скин применяется сразу. Светлые: Светлый, Бумага, Мята, Сакура.",
+                       "A skin applies at once. Light ones: Light, Paper, Mint, Sakura."),
     "opt_resume":     ("Продолжать с того же места при следующем запуске", "Continue where you stopped on the next start"),
     "opt_single_window": ("Файлы из Проводника — в уже открытый плеер", "Files from Explorer go to the running player"),
     "opt_media_keys": ("Медиаклавиши клавиатуры работают и в фоне", "Keyboard media keys work in the background too"),

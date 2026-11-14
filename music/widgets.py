@@ -20,10 +20,24 @@ def fmt_time(sec: float | None) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
+def set_btn_icon(b: QToolButton, icon_name: str) -> None:
+    """The icon of a tool button in the colour of the current skin (remembered, so a skin change can redo it)."""
+    b.setProperty("ico", icon_name)
+    b.setIcon(style.icon(icon_name, style.btn_fg(b)))
+
+
+def recolor_buttons(root: QWidget) -> None:
+    """After a skin change: every tool button below root gets its icon again in the new colour."""
+    for b in root.findChildren(QToolButton):
+        name = b.property("ico")
+        if name:
+            b.setIcon(style.icon(name, style.btn_fg(b)))
+
+
 def ctl_button(icon_name: str, tip: str, size: int = 20, slot=None, obj: str = "ctl") -> QToolButton:
     b = QToolButton()
     b.setObjectName(obj)
-    b.setIcon(style.icon(icon_name, "#ffffff"))
+    set_btn_icon(b, icon_name)
     b.setIconSize(QSize(size, size))
     b.setToolTip(tip)
     b.setCursor(Qt.PointingHandCursor)
@@ -63,7 +77,7 @@ class SeekBar(QWidget):
         h = 4 if self.thin else (6 if self.hover >= 0 or self.drag else 4)
         y = (self.height() - h) / 2
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, 45))
+        p.setBrush(style.fgc(45))
         p.drawRoundedRect(QRectF(0, y, self.width(), h), h / 2, h / 2)
         frac = self.pos_ / self.dur if self.dur else 0
         if frac > 0:
@@ -74,7 +88,7 @@ class SeekBar(QWidget):
             p.drawRoundedRect(QRectF(0, y, self.width() * frac, h), h / 2, h / 2)
         if (self.hover >= 0 or self.drag) and self.dur:
             x = self.width() * frac
-            p.setBrush(QColor("#ffffff"))
+            p.setBrush(QColor("#ffffff") if style.IS_DARK else QColor(style.ACCENT))
             p.drawEllipse(QPointF(x, self.height() / 2), 6, 6)
         p.end()
 
@@ -152,14 +166,15 @@ class WaveSeekBar(SeekBar):
         frac = self.pos_ / self.dur if self.dur else 0.0
         px = w * frac
         hx = self.hover if self.hover >= 0 and not self.drag else -1
-        played, rest = QColor("#ffffff"), QColor(255, 255, 255, 105)
-        hovered = QColor(255, 255, 255, 175)
-        r_played, r_rest = QColor(255, 255, 255, 80), QColor(255, 255, 255, 34)
+        played = QColor(style.WAVE)
+        rest, hovered = style.fgc(105), style.fgc(175)
+        r_played, r_rest = QColor(played), style.fgc(34)
+        r_played.setAlpha(80)
         p.setPen(Qt.NoPen)
         if self.loading:                                   # a quiet flat line until the waveform is read
-            p.setBrush(QColor(255, 255, 255, 40))
+            p.setBrush(style.fgc(40))
             p.drawRect(QRectF(0, base - 2, w, 2))
-            p.setBrush(QColor(255, 255, 255, 140))
+            p.setBrush(style.fgc(140))
             p.drawRect(QRectF(0, base - 2, px, 2))
         else:
             vals = self._bar_values(n)
@@ -179,10 +194,10 @@ class WaveSeekBar(SeekBar):
                 p.setBrush(ref)
                 p.drawRect(QRectF(x, base + 1, self.BAR, down))
         if self.dur:
-            p.setBrush(QColor("#ffffff"))
+            p.setBrush(played)
             p.drawRect(QRectF(min(px, w - 1), 0, 1, h))
             if hx >= 0:
-                p.setBrush(QColor(255, 255, 255, 120))
+                p.setBrush(style.fgc(120))
                 p.drawRect(QRectF(hx, 0, 1, h))
         p.end()
 
@@ -193,12 +208,12 @@ def placeholder_cover(size: int) -> QPixmap:
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
     g = QLinearGradient(0, 0, size, size)
-    g.setColorAt(0, QColor("#1c2230"))
-    g.setColorAt(1, QColor("#241c35"))
+    g.setColorAt(0, QColor(style.PH1))
+    g.setColorAt(1, QColor(style.PH2))
     p.setPen(Qt.NoPen)
     p.setBrush(g)
     p.drawRoundedRect(QRectF(0, 0, size, size), size * 0.06, size * 0.06)
-    ic = style.icon("fa6s.music", "#3d4660").pixmap(int(size * 0.36), int(size * 0.36))
+    ic = style.icon("fa6s.music", style.PH_ICON).pixmap(int(size * 0.36), int(size * 0.36))
     p.drawPixmap(int(size * 0.32), int(size * 0.32), ic)
     p.end()
     return pm
@@ -276,13 +291,17 @@ class Toast(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignCenter)
-        self.setStyleSheet(f"background: rgba(23,26,33,235); border: 1px solid {style.BORDER}; border-radius: 10px;"
-                           " padding: 8px 16px; color: #ffffff;")
+        self.restyle()
         self.hide()
         self._t = QTimer(self)
         self._t.setSingleShot(True)
         self._t.timeout.connect(self.hide)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def restyle(self):
+        r, g, b, a = style.TOAST
+        self.setStyleSheet(f"background: rgba({r},{g},{b},{a}); border: 1px solid {style.BORDER}; border-radius: 10px;"
+                           f" padding: 8px 16px; color: {style.TEXT};")
 
     def show_text(self, text: str, ms: int = 1600):
         self.setText(text)
@@ -328,7 +347,7 @@ class SpeakerMap(QWidget):
         # the listener
         c = QPointF(self.width() / 2, self.height() * 0.6)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#3a4152"))
+        p.setBrush(QColor(style.SPK))
         p.drawEllipse(c, 18, 18)
         p.setPen(QColor(style.MUTED))
         f = QFont(self.font())
@@ -436,13 +455,23 @@ class LyricsView(QListWidget):
         self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setWordWrap(True)
-        self.setStyleSheet("QListWidget#lyrics { background: transparent; border: none; }"
-                           "QListWidget#lyrics::item { padding: 3px 2px; border: none; }"
-                           "QListWidget#lyrics::item:hover { background: rgba(255,255,255,12); border-radius: 6px; }")
+        self.restyle(redraw=False)
         self.lyr = None
         self.cur = -2
         self.user_scrolled_at = 0.0
         self.itemClicked.connect(self._clicked)
+
+    def restyle(self, redraw: bool = True):
+        """The colours of the skin; the lines are filled again (their colours were set per item)."""
+        self.setStyleSheet("QListWidget#lyrics { background: transparent; border: none; }"
+                           "QListWidget#lyrics::item { padding: 3px 2px; border: none; }"
+                           f"QListWidget#lyrics::item:hover {{ background: {style.H(12)}; border-radius: 6px; }}")
+        if redraw and self.lyr is not None:
+            pos = self.cur
+            self.set_lyrics(self.lyr)
+            if pos >= 0 and self.lyr.synced and pos < self.count():
+                self.cur = -2
+                self.set_pos(self.lyr.times[pos])
 
     def set_lyrics(self, lyr):
         self.lyr = lyr
@@ -477,7 +506,7 @@ class LyricsView(QListWidget):
             f = it.font()
             f.setBold(True)
             it.setFont(f)
-            it.setForeground(QColor("#ffffff"))
+            it.setForeground(QColor(style.FG))
             import time
             if time.monotonic() - self.user_scrolled_at > 4:         # don't fight the user's scrolling
                 self.scrollToItem(it, QAbstractItemView.PositionAtCenter)
@@ -599,7 +628,7 @@ class ChannelMeters(QWidget):
             y = top + (bot - top) * (db / FLOOR_DB)
             p.setPen(QColor(style.MUTED))
             p.drawText(QRectF(2, y - 7, x0 - 7, 14), Qt.AlignRight | Qt.AlignVCenter, str(db))
-            p.setPen(QPen(QColor(255, 255, 255, 16), 1))
+            p.setPen(QPen(style.fgc(16), 1))
             p.drawLine(QPointF(x0, y), QPointF(x1, y))
         names = self.state.ch or ["FL", "FC", "FR", "LFE", "SL", "SR"]
         slot = (x1 - x0) / len(names)
@@ -608,7 +637,7 @@ class ChannelMeters(QWidget):
         for i, n in enumerate(names):
             x = x0 + slot * i + (slot - bw) / 2
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(255, 255, 255, 12))
+            p.setBrush(style.fgc(14))
             p.drawRoundedRect(QRectF(x, top, bw, bot - top), 3, 3)
             fr = LevelState.frac(self.state.rms.get(n, FLOOR_DB))
             if fr > 0.002:
@@ -618,7 +647,7 @@ class ChannelMeters(QWidget):
             pf = LevelState.frac(self.state.peak.get(n, FLOOR_DB))
             if pf > 0.002:
                 y = bot - (bot - top) * pf
-                p.setBrush(QColor("#ffffff"))
+                p.setBrush(style.fgc())
                 p.drawRect(QRectF(x, y - 1, bw, 2))
             f.setPointSizeF(8)
             f.setBold(True)
@@ -665,7 +694,7 @@ class RoomMeters(QWidget):
                 p.setPen(QPen(QBrush(g), 2 + 7 * a, Qt.SolidLine, Qt.RoundCap))
                 p.drawLine(pt, c)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#3a4152"))
+        p.setBrush(QColor(style.SPK))
         p.drawEllipse(c, 16, 16)
         f = QFont(self.font())
         f.setPointSizeF(8.5)
