@@ -148,7 +148,7 @@ def main() -> int:
     app.setApplicationName(APP_TITLE)
     app.setStyle("Fusion")
     from . import style
-    app.setStyleSheet(style.stylesheet())
+    style.apply(app, cfg.get("theme"))
     app.setWindowIcon(style.app_icon())
     gui_thread_gc(app)
     if cfg.get("language", "ru") == "ru":

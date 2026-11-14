@@ -67,7 +67,14 @@ class SettingsDialog(QDialog):
         self.lang.addItem("English", "en")
         self.lang.setCurrentIndex(0 if cfg.get("language") == "ru" else 1)
         form.addRow(t("language"), self.lang)
+        from . import themes
+        self.theme = QComboBox()
+        for key in themes.ORDER:
+            self.theme.addItem(style.swatch(key), style.theme_label(key), key)
+        self.theme.setCurrentIndex(max(0, self.theme.findData(themes.valid(cfg.get("theme")))))
+        form.addRow(t("theme"), self.theme)
         g.addLayout(form)
+        g.addWidget(_hint(t("theme_hint")))
         self._groups(g, "general")
         self.checks["resume_play"].setEnabled(self.checks["resume"].isChecked())
         self.checks["resume"].toggled.connect(self.checks["resume_play"].setEnabled)
@@ -166,6 +173,7 @@ class SettingsDialog(QDialog):
 
     def accept(self):
         self.cfg["language"] = self.lang.currentData()
+        self.cfg["theme"] = self.theme.currentData()
         for k, cb in self.checks.items():
             self.cfg[k] = cb.isChecked()
         self.cfg["row_size"] = self.rows.currentData()
@@ -371,7 +379,7 @@ class SpeakerTestDialog(QDialog):
         form.addRow(t("lfe"), self.lfe)
         lay.addLayout(form)
         row = QHBoxLayout()
-        self.auto = QPushButton(style.icon("fa6s.rotate", "#ffffff"), "  " + t("test_cycle"))
+        self.auto = QPushButton(style.icon("fa6s.rotate", style.TEXT), "  " + t("test_cycle"))
         self.auto.setObjectName("primary")
         self.auto.clicked.connect(self.toggle_cycle)
         row.addWidget(self.auto)

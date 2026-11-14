@@ -9,6 +9,7 @@ import sys
 
 DEFAULTS = {
     "language":      "ru",
+    "theme":         "dark",        # the skin: dark | light | paper | mint | sakura (themes.py)
     "volume":        80,
     "muted":         False,
     "single_window": True,          # files opened from Explorer go to the running player
@@ -125,6 +126,8 @@ def load() -> dict:
         cfg.update({k: v for k, v in saved.items() if k in DEFAULTS})
     if cfg.get("language") not in ("ru", "en"):
         cfg["language"] = "ru"
+    from .themes import valid
+    cfg["theme"] = valid(cfg.get("theme"))
     if cfg.get("repeat") not in ("off", "all", "one"):
         cfg["repeat"] = "off"
     if cfg.get("channels") not in ("auto", "5.1", "stereo"):

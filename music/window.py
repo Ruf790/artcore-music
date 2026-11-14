@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QHBoxLayout, 
                                QMenu, QMessageBox, QSlider, QSplitter, QSystemTrayIcon, QTreeWidgetItem, QVBoxLayout,
                                QWidget)
 
-from . import APP_TITLE, AUDIO_EXT, CUE_EXT, PLAYLIST_EXT, VERSION, audio, config, meta, style, winint
+from . import APP_TITLE, AUDIO_EXT, CUE_EXT, PLAYLIST_EXT, VERSION, audio, config, meta, style, themes, winint
 from .engine import Engine
 from .library import Favorites, History
 from .i18n import t
@@ -22,13 +22,11 @@ from .playlist import Playlist, Track, expand, fill_tags, is_url, write_m3u
 from .waveform import Waveforms, key_of
 from . import lyrics as lyrics_mod
 from .widgets import (ChannelMeters, ClickLabel, CoverView, LevelState, LyricsView, PlaylistView, RoomMeters,
-                      Toast, WaveSeekBar, ctl_button, elide, fmt_time)
+                      Toast, WaveSeekBar, ctl_button, elide, fmt_time, recolor_buttons, set_btn_icon)
 
 COL_N, COL_TITLE, COL_ARTIST, COL_ALBUM, COL_LEN, COL_FAV = range(6)
 NCOLS = 6
 COL_KEYS = {"n": COL_N, "artist": COL_ARTIST, "album": COL_ALBUM, "len": COL_LEN, "fav": COL_FAV}
-ACCENT_TEXT = "#8fb8ff"
-STAR = "#f5c518"
 ROW_PAD = {"compact": 2, "normal": 5, "large": 9}
 SLEEP_MINUTES = (15, 30, 45, 60, 90, 120)
 UID = Qt.UserRole + 1
@@ -102,8 +100,6 @@ class MiniWindow(QWidget):
         self._drag = None
         self._vol_until = 0.0
 
-        white = "background: transparent; color: #ffffff;"
-        dim = "background: transparent; color: rgba(255,255,255,175); font-size: 8.5pt;"
         lay = QHBoxLayout(self)
         lay.setContentsMargins(14, 12, 12, 10) if not self.strip else lay.setContentsMargins(12, 10, 10, 8)
         lay.setSpacing(14 if not self.strip else 12)
@@ -116,11 +112,9 @@ class MiniWindow(QWidget):
         lay.addWidget(self.cover, 0, Qt.AlignTop if not self.strip else Qt.AlignVCenter)
 
         self.title = QLabel()
-        self.title.setStyleSheet(white + "font-weight: 700; font-size: 10.5pt;")
         self.artist = QLabel()
-        self.artist.setStyleSheet(dim)
         self.time = QLabel("0:00")
-        self.time.setStyleSheet(dim)
+        self.restyle()
         self.seek = WaveSeekBar()
         self.seek.setFixedHeight(32 if self.strip else 40)
         self.seek.seek.connect(win.engine.seek)
@@ -174,6 +168,22 @@ class MiniWindow(QWidget):
         self.sync_pin()
 
     # ── look ─────────────────────────────────────────────────
+    def restyle(self):
+        """Text colours of the skin (the mini player has its own, it sits on a picture, not on the window)."""
+        fg = QColor(style.FG)
+        white = f"background: transparent; color: {style.FG};"
+        dim = f"background: transparent; color: rgba({fg.red()},{fg.green()},{fg.blue()},175); font-size: 8.5pt;"
+        self.title.setStyleSheet(white + "font-weight: 700; font-size: 10.5pt;")
+        self.artist.setStyleSheet(dim)
+        self.time.setStyleSheet(dim)
+
+    def apply_theme(self):
+        self.restyle()
+        self._bg = None
+        self.cover._cache = None
+        recolor_buttons(self)
+        self.update()
+
     def set_cover(self, data: bytes | None):
         self.cover.set_image(data or None)
         self._bg_src = self.cover.src
@@ -198,14 +208,16 @@ class MiniWindow(QWidget):
             side = max(self.width(), self.height())
             big = small.scaled(side, side, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
             p.drawPixmap((self.width() - side) // 2, (self.height() - side) // 2, big)
-            p.fillRect(pm.rect(), QColor(10, 12, 18, 150))
+            p.fillRect(pm.rect(), QColor(*style.MINI_COVER))
         else:
             g = QLinearGradient(0, 0, self.width(), self.height())
-            g.setColorAt(0, QColor(13, 110, 253, 120))
-            g.setColorAt(1, QColor(111, 66, 193, 150))
+            g.setColorAt(0, style.accent_c(120 if style.IS_DARK else 80))
+            c2 = QColor(style.ACCENT2)
+            c2.setAlpha(150 if style.IS_DARK else 95)
+            g.setColorAt(1, c2)
             p.fillRect(pm.rect(), QColor(style.PANEL))
             p.fillRect(pm.rect(), g)
-            p.fillRect(pm.rect(), QColor(10, 12, 18, 90))
+            p.fillRect(pm.rect(), QColor(*style.MINI_PLAIN))
         p.end()
         self._bg = pm
         return pm
@@ -221,7 +233,7 @@ class MiniWindow(QWidget):
         p.drawPixmap(0, 0, self._background())
         p.setOpacity(1.0)
         p.setClipping(False)
-        p.setPen(QPen(QColor(255, 255, 255, 46), 1))
+        p.setPen(QPen(style.fgc(46), 1))
         p.setBrush(Qt.NoBrush)
         p.drawRoundedRect(r, self.RADIUS, self.RADIUS)
         p.end()
@@ -255,8 +267,8 @@ class MiniWindow(QWidget):
     def set_mode_buttons(self, shuffle: bool, repeat: str):
         self.b_shuffle.setObjectName("on" if shuffle else "ctl")
         self.b_repeat.setObjectName("ctl" if repeat == "off" else "on")
-        self.b_repeat.setIcon(style.icon({"off": "mdi6.repeat-off", "all": "mdi6.repeat",
-                                          "one": "mdi6.repeat-once"}[repeat], "#ffffff"))
+        set_btn_icon(self.b_repeat, {"off": "mdi6.repeat-off", "all": "mdi6.repeat",
+                                     "one": "mdi6.repeat-once"}[repeat])
         for b in (self.b_shuffle, self.b_repeat):
             b.style().unpolish(b)
             b.style().polish(b)
@@ -362,7 +374,7 @@ class LevelsWindow(QDialog):
             super().keyPressEvent(e)
 
     def showEvent(self, e):
-        winint.dark_title_bar(int(self.winId()))
+        winint.dark_title_bar(int(self.winId()), style.IS_DARK)
         super().showEvent(e)
         self.win._meters_need()
 
@@ -830,9 +842,9 @@ class MainWindow(QMainWindow):
     def _tab_icons(self):
         for i, p in enumerate(self.pls):
             if p is self.engine.pl and self.engine.cur is not None:
-                self.tabbar.setTabIcon(i, style.icon("fa6s.volume-high", ACCENT_TEXT))
+                self.tabbar.setTabIcon(i, style.icon("fa6s.volume-high", style.ACCENT_TEXT))
             elif p.kind == "favorites":
-                self.tabbar.setTabIcon(i, style.icon("fa6s.star", STAR))
+                self.tabbar.setTabIcon(i, style.icon("fa6s.star", style.STAR))
             elif p.kind == "history":
                 self.tabbar.setTabIcon(i, style.icon("fa6s.clock-rotate-left", style.MUTED))
             else:
@@ -1052,19 +1064,19 @@ class MainWindow(QMainWindow):
         f.setBold(playing)
         for c in range(NCOLS):
             it.setFont(c, f)
-            it.setForeground(c, QColor(ACCENT_TEXT) if playing or (c == COL_N and qpos) else
+            it.setForeground(c, QColor(style.ACCENT_TEXT) if playing or (c == COL_N and qpos) else
                              QColor(style.TEXT if c != COL_N else style.MUTED))
         if playing and not self.engine.stopped:
-            icon = style.icon("fa6s.volume-high" if not self.engine.paused else "fa6s.pause", ACCENT_TEXT)
+            icon = style.icon("fa6s.volume-high" if not self.engine.paused else "fa6s.pause", style.ACCENT_TEXT)
         elif qpos:
-            icon = style.icon("fa6s.angles-right", ACCENT_TEXT)
+            icon = style.icon("fa6s.angles-right", style.ACCENT_TEXT)
         else:
             icon = style.icon("fa6s.music", "#00000000")
         it.setIcon(COL_N, icon)
         if qpos:
             it.setToolTip(COL_N, t("queued_n", qpos))
         fav = self.favs.has(tr)
-        it.setIcon(COL_FAV, style.icon("fa6s.star", STAR) if fav else style.icon("mdi6.star-outline", "#3a4152"))
+        it.setIcon(COL_FAV, style.icon("fa6s.star", style.STAR) if fav else style.icon("mdi6.star-outline", style.STAR_OFF))
         it.setToolTip(COL_FAV, t("unfav") if fav else t("fav"))
 
     def _rebuild_list(self):
@@ -1313,7 +1325,7 @@ class MainWindow(QMainWindow):
                 m.addAction(style.icon("fa6s.xmark"), t("unqueue"), lambda q=sel_q: self.engine.dequeue(q))
             trk = self.pl.by_uid(uid)
             fav = trk is not None and self.favs.has(trk)
-            m.addAction(style.icon("fa6s.star", STAR if not fav else style.MUTED),
+            m.addAction(style.icon("fa6s.star", style.STAR if not fav else style.MUTED),
                         (t("unfav") if fav else t("fav")) + "\tCtrl+D", self.toggle_fav_selected)
             m.addAction(style.icon("fa6s.pen"), t("edit_tags") + "\tF2", self.edit_tags_selected)
             m.addSeparator()
@@ -1519,10 +1531,10 @@ class MainWindow(QMainWindow):
         v = self.vol.value()
         name = "fa6s.volume-xmark" if self.cfg.get("muted") or v == 0 else \
             "fa6s.volume-low" if v < 40 else "fa6s.volume-high"
-        self.b_mute.setIcon(style.icon(name, "#ffffff"))
+        set_btn_icon(self.b_mute, name)
         self.l_vol.setText(f"{v}%")
         if self.mini is not None:
-            self.mini.b_mute.setIcon(style.icon(name, "#ffffff"))
+            set_btn_icon(self.mini.b_mute, name)
 
     def toggle_shuffle(self):
         on = not self.engine.pl.shuffle
@@ -1548,8 +1560,8 @@ class MainWindow(QMainWindow):
         self.b_shuffle.setObjectName("on" if self.engine.pl.shuffle else "ctl")
         rep = self.engine.pl.repeat
         self.b_repeat.setObjectName("ctl" if rep == "off" else "on")
-        self.b_repeat.setIcon(style.icon({"off": "mdi6.repeat-off", "all": "mdi6.repeat",
-                                          "one": "mdi6.repeat-once"}[rep], "#ffffff"))
+        set_btn_icon(self.b_repeat, {"off": "mdi6.repeat-off", "all": "mdi6.repeat",
+                                     "one": "mdi6.repeat-once"}[rep])
         self.b_repeat.setToolTip(t("repeat_" + rep) + " (R)")
         for b in (self.b_shuffle, self.b_repeat):
             b.style().unpolish(b)
@@ -1730,10 +1742,10 @@ class MainWindow(QMainWindow):
 
     def _on_paused(self, paused: bool):
         icon = "fa6s.play" if paused else "fa6s.pause"
-        self.b_play.setIcon(style.icon(icon, "#ffffff"))
+        set_btn_icon(self.b_play, icon)
         self.b_play.setToolTip((t("play") if paused else t("pause")) + " (Space)")
         if self.mini is not None:
-            self.mini.b_play.setIcon(style.icon(icon, "#ffffff"))
+            set_btn_icon(self.mini.b_play, icon)
         self._meters_need()
         if self.engine.cur is not None:
             self._refresh_item(self.engine.cur.uid)
@@ -2000,7 +2012,7 @@ class MainWindow(QMainWindow):
         m.addAction(style.icon("fa6s.floppy-disk"), t("save_pl") + "\tCtrl+S", self.save_playlist_dialog)
         m.addAction(style.icon("fa6s.plus"), t("new_tab") + "\tCtrl+N", lambda: self.new_tab())
         m.addSeparator()
-        m.addAction(style.icon("fa6s.star", STAR), t("favorites") + "\tCtrl+B",
+        m.addAction(style.icon("fa6s.star", style.STAR), t("favorites") + "\tCtrl+B",
                     lambda: self.open_library_tab("favorites"))
         m.addAction(style.icon("fa6s.clock-rotate-left"), t("history") + "\tCtrl+H",
                     lambda: self.open_library_tab("history"))
@@ -2069,6 +2081,14 @@ class MainWindow(QMainWindow):
         a.setCheckable(True)
         a.setChecked(bool(self.cfg.get("on_top")))
         m.addSeparator()
+        sk = m.addMenu(style.icon("fa6s.palette"), t("theme"))
+        gt = QActionGroup(sk)
+        for key in themes.ORDER:
+            a = sk.addAction(style.swatch(key), style.theme_label(key))
+            a.setCheckable(True)
+            a.setChecked(style.CURRENT == key)
+            a.triggered.connect(lambda _=False, k=key: self.set_theme(k))
+            gt.addAction(a)
         m.addAction(style.icon("fa6s.gear"), t("settings") + "\tCtrl+,", self.settings_dialog)
         m.addAction(style.icon("fa6s.keyboard"), t("keys") + "\tF1", self.keys_dialog)
         m.addAction(style.icon("fa6s.circle-arrow-up"), t("upd_check_now"), lambda: self.check_updates(True))
@@ -2089,14 +2109,53 @@ class MainWindow(QMainWindow):
         self.restoreGeometry(geo)
         self.toast.show_text(t("on_top_on") if self.cfg["on_top"] else t("on_top_off"), 1100)
 
+    # ── skins ─────────────────────────────────────────────────
+    def set_theme(self, key: str):
+        """Switch the skin at once (menu); the choice is kept in the config."""
+        key = themes.valid(key)
+        if key == style.CURRENT and self.cfg.get("theme") == key:
+            return
+        self.cfg["theme"] = key
+        self._apply_theme()
+        config.save(self.cfg)
+
+    def _apply_theme(self):
+        """Everything that was coloured when it was built: icons, rows, lyrics, covers, the mini player."""
+        style.apply(QApplication.instance(), self.cfg.get("theme"))
+        self.setUpdatesEnabled(False)
+        try:
+            recolor_buttons(self)
+            self.view.headerItem().setIcon(COL_FAV, style.icon("fa6s.star", style.MUTED))
+            self._tab_icons()
+            for uid in list(self.items):
+                self._refresh_item(uid)
+            self.empty.setStyleSheet(f"color: {style.MUTED}; font-size: 11pt;")
+            self.toast.restyle()
+            self.lyrics.restyle()
+            self.cover._cache = None
+            for w in (self.cover, self.seekbar, self.meters):
+                w.update()
+            if self.levels_win is not None:
+                self.levels_win.room.update()
+                winint.dark_title_bar(int(self.levels_win.winId()), style.IS_DARK)
+            winint.dark_title_bar(int(self.winId()), style.IS_DARK)
+            if self.mini is not None:
+                self.mini.apply_theme()
+        finally:
+            self.setUpdatesEnabled(True)
+        self.update()
+
     def settings_dialog(self):
         from .dialogs import SettingsDialog
+        theme = self.cfg.get("theme")
         lang = self.cfg.get("language")
         keys = self.cfg.get("media_keys")
         top = self.cfg.get("on_top")
         d = SettingsDialog(self.cfg, self)
         if d.exec():
             config.save(self.cfg)
+            if theme != self.cfg.get("theme"):
+                self._apply_theme()
             self._apply_view_options()
             self._setup_tray()
             self._setup_smtc()
@@ -2157,7 +2216,7 @@ class MainWindow(QMainWindow):
         """Everything the mini player shows, from the big window's state."""
         m = self.mini
         self._set_mini(self.engine.cur)
-        m.b_play.setIcon(style.icon("fa6s.play" if self.engine.paused else "fa6s.pause", "#ffffff"))
+        set_btn_icon(m.b_play, "fa6s.play" if self.engine.paused else "fa6s.pause")
         m.set_mode_buttons(self.engine.pl.shuffle, self.engine.pl.repeat)
         self._sync_mute_icon()
         self._mini_wave()
@@ -2396,7 +2455,7 @@ class MainWindow(QMainWindow):
     # ── window ────────────────────────────────────────────────
     def showEvent(self, e):
         super().showEvent(e)
-        winint.dark_title_bar(int(self.winId()))
+        winint.dark_title_bar(int(self.winId()), style.IS_DARK)
         if not getattr(self, "_shown_once", False):
             self._shown_once = True
             if self.cfg.get("media_keys", True):
