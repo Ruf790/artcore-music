@@ -1,4 +1,4 @@
-﻿"""ArtCore Music â€” an audio player on the mpv engine (libmpv) with a Qt interface."""
+"""ArtCore Music — an audio player on the mpv engine (libmpv) with a Qt interface."""
 VERSION_TUPLE = (1, 6, 0, 0)
 VERSION       = "1.6.0"
 APP_TITLE     = "ArtCore Music"
