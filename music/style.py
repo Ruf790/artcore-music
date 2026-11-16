@@ -27,7 +27,7 @@ def _rgb(hex_: str) -> str:
 def set_theme(name: str | None) -> str:
     """Switch the colour variables to a skin; returns the name actually used."""
     global CURRENT, IS_DARK, ACCENT, ACCENT2, BG, PANEL, PANEL2, BORDER, TEXT, MUTED
-    global FG, ACCENT_TEXT, STAR, STAR_OFF, ALT, WAVE, SPK, PH1, PH2, PH_ICON, HANDLE, HANDLE_EDGE
+    global FG, ACCENT_TEXT, STAR, STAR_OFF, ALT, WAVE, SPK, PH1, PH2, PH_ICON, HANDLE
     global MINI_COVER, MINI_PLAIN, TOAST, SEL_A, _hover_rgb, _hover_k
     CURRENT = themes.valid(name)
     th = themes.THEMES[CURRENT]
@@ -41,8 +41,32 @@ def set_theme(name: str | None) -> str:
     _hover_rgb, _hover_k = ("255,255,255", 1.0) if IS_DARK else ("0,0,0", 0.5)
     SEL_A = 95 if IS_DARK else 62
     HANDLE = "#ffffff"
-    HANDLE_EDGE = "#ffffff" if IS_DARK else ACCENT
+    _use_cover()
     return CURRENT
+
+
+COVER: tuple[str, str, str] | None = None               # (accent, accent2, accent_text) from the album cover
+
+
+def _use_cover():
+    global ACCENT, ACCENT2, ACCENT_TEXT, HANDLE_EDGE
+    if COVER:
+        ACCENT, ACCENT2, ACCENT_TEXT = COVER
+    HANDLE_EDGE = "#ffffff" if IS_DARK else ACCENT
+
+
+def set_cover(colors: tuple[str, str, str] | None) -> bool:
+    """Take the accent from the cover (None: the skin's own). Returns whether anything changed;
+    the caller re-applies the style sheet."""
+    global COVER, ACCENT, ACCENT2, ACCENT_TEXT
+    colors = tuple(colors) if colors else None
+    if colors == COVER:
+        return False
+    COVER = colors
+    th = themes.THEMES[CURRENT]
+    ACCENT, ACCENT2, ACCENT_TEXT = th["accent"], th["accent2"], th["accent_text"]
+    _use_cover()
+    return True
 
 
 SEL_A = 95                                               # opacity of the selected-row tint (set_theme)

@@ -6,8 +6,8 @@ import os
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
                            QRadialGradient)
-from PySide6.QtWidgets import (QAbstractItemView, QLabel, QListWidget, QListWidgetItem, QToolButton,
-                               QTreeWidget, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QLabel, QListWidget, QListWidgetItem, QStyledItemDelegate,
+                               QStyleOptionViewItem, QToolButton, QTreeWidget, QWidget)
 
 from . import style
 
@@ -121,8 +121,9 @@ class WaveSeekBar(SeekBar):
     """The seek bar as a waveform: bars above a base line, their dim reflection below; played = bright,
     hover = a lighter preview up to the mouse, a thin line at the position. Without a waveform (still being
     read, a stream) it is the plain bar."""
-    HEIGHT = 58
-    BAR, GAP = 2, 1
+    HEIGHT = 72
+    TOP = 16                         # room above the bars for the time bubble under the mouse
+    BAR, GAP = 3, 2
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -155,21 +156,42 @@ class WaveSeekBar(SeekBar):
         self._bars, self._bars_w = out, n
         return out
 
+    def _wave_on(self) -> bool:
+        return self.enabled_wave and bool(self.peaks or self.loading)
+
+    def mouseMoveEvent(self, e):
+        super().mouseMoveEvent(e)
+        if self._wave_on():
+            self.setToolTip("")                            # the time is drawn above the bars instead
+
     def paintEvent(self, e):
-        if not self.enabled_wave or not (self.peaks or self.loading):
+        if not self._wave_on():
             return super().paintEvent(e)
         p = QPainter(self)
-        w, h = self.width(), self.height()
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h0 = self.width(), self.height()
+        top0 = self.TOP
+        p.translate(0, top0)
+        h = h0 - top0
         base = round(h * 0.68)
         step = self.BAR + self.GAP
         n = max(1, w // step)
         frac = self.pos_ / self.dur if self.dur else 0.0
         px = w * frac
         hx = self.hover if self.hover >= 0 and not self.drag else -1
-        played = QColor(style.WAVE)
-        rest, hovered = style.fgc(105), style.fgc(175)
-        r_played, r_rest = QColor(played), style.fgc(34)
-        r_played.setAlpha(80)
+        played = QLinearGradient(0, 0, w, 0)                   # the played part: the accent gradient
+        played.setColorAt(0, QColor(style.ACCENT2))
+        played.setColorAt(1, QColor(style.ACCENT))
+        played = QBrush(played)
+        rest, hovered = style.fgc(70), style.fgc(140)
+        r_played = QLinearGradient(0, 0, w, 0)
+        c1, c2 = QColor(style.ACCENT2), QColor(style.ACCENT)
+        c1.setAlpha(80)
+        c2.setAlpha(80)
+        r_played.setColorAt(0, c1)
+        r_played.setColorAt(1, c2)
+        r_played = QBrush(r_played)
+        r_rest = style.fgc(30)
         p.setPen(Qt.NoPen)
         if self.loading:                                   # a quiet flat line until the waveform is read
             p.setBrush(style.fgc(40))
@@ -190,15 +212,29 @@ class WaveSeekBar(SeekBar):
                 else:
                     top, ref = rest, r_rest
                 p.setBrush(top)
-                p.drawRect(QRectF(x, base - up, self.BAR, up))
+                p.drawRoundedRect(QRectF(x, base - up, self.BAR, up), 1.2, 1.2)
                 p.setBrush(ref)
-                p.drawRect(QRectF(x, base + 1, self.BAR, down))
+                p.drawRoundedRect(QRectF(x, base + 1, self.BAR, down), 1.2, 1.2)
         if self.dur:
-            p.setBrush(played)
-            p.drawRect(QRectF(min(px, w - 1), 0, 1, h))
+            p.setBrush(style.fgc(230))
+            p.drawRect(QRectF(min(px, w - 2), 0, 2, h))
             if hx >= 0:
                 p.setBrush(style.fgc(120))
                 p.drawRect(QRectF(hx, 0, 1, h))
+        p.resetTransform()
+        if self.dur and hx >= 0:                             # the time under the mouse, in a bubble
+            txt = fmt_time(self._sec_at(hx))
+            f = QFont(self.font())
+            f.setPointSizeF(8)
+            f.setBold(True)
+            p.setFont(f)
+            tw = p.fontMetrics().horizontalAdvance(txt) + 12
+            r = QRectF(max(0.0, min(w - tw, hx - tw / 2)), 0, tw, top0 - 1)
+            p.setPen(Qt.NoPen)
+            p.setBrush(style.fgc(235) if style.IS_DARK else QColor(style.TEXT))
+            p.drawRoundedRect(r, 4, 4)
+            p.setPen(QColor(style.BG) if style.IS_DARK else QColor("#ffffff"))
+            p.drawText(r, Qt.AlignCenter, txt)
         p.end()
 
 
@@ -386,15 +422,118 @@ class SpeakerMap(QWidget):
                 return
 
 
+class GroupHead:
+    """What the view draws above the first track of a group (filled in by the window)."""
+    __slots__ = ("key", "kind", "title", "sub", "cover", "folded", "count")
+
+    def __init__(self, key: str, kind: str, title: str, sub: str, cover=None, folded: bool = False, count: int = 1):
+        self.key, self.kind, self.title, self.sub = key, kind, title, sub
+        self.cover = cover               # QPixmap | None | callable returning one (read when first drawn)
+        self.folded = folded
+        self.count = count
+
+
+class GroupDelegate(QStyledItemDelegate):
+    """Rows as usual; the first row of a group is taller and carries the group's head above it."""
+    HEAD = 62
+    ICONS = {"radio": "fa6s.tower-broadcast", "singles": "fa6s.music", "album": "fa6s.compact-disc"}
+
+    def __init__(self, view: "PlaylistView"):
+        super().__init__(view)
+        self.view = view
+
+    def _head(self, index):
+        return self.view.heads.get(index.siblingAtColumn(0).data(self.view.uid_role))
+
+    def sizeHint(self, option, index):
+        sz = super().sizeHint(option, index)
+        hd = self._head(index)
+        if hd is None:
+            return sz
+        return QSize(sz.width(), self.HEAD + (0 if hd.folded else sz.height()))
+
+    def _tint(self, painter, rect, index):
+        """The playing row's tint (the style sheet would ignore the item's own background)."""
+        b = index.data(Qt.BackgroundRole)
+        if isinstance(b, QBrush) and b.style() != Qt.NoBrush:
+            painter.fillRect(rect, b)
+
+    def paint(self, painter, option, index):
+        hd = self._head(index)
+        if hd is None:
+            self._tint(painter, option.rect, index)
+            return super().paint(painter, option, index)
+        row = QStyleOptionViewItem(option)
+        row.rect.setTop(option.rect.top() + self.HEAD)
+        if not hd.folded:
+            self._tint(painter, row.rect, index)
+            super().paint(painter, row, index)
+        # the head goes over the whole width, drawn with the last visible column (after the row panels)
+        if index.column() == self.view.last_column():
+            r = QRectF(0, option.rect.top(), self.view.viewport().width(), self.HEAD)
+            self.paint_head(painter, r, hd)
+
+    def paint_head(self, p: QPainter, r: QRectF, hd: GroupHead):
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(style.PANEL))
+        p.drawRect(r)
+        if r.top() > 1:
+            p.setBrush(QColor(style.BORDER))
+            p.drawRect(QRectF(r.left() + 8, r.top(), r.width() - 16, 1))
+        side = 44.0
+        art = QRectF(r.left() + 10, r.top() + (r.height() - side) / 2 + 2, side, side)
+        pm = hd.cover() if callable(hd.cover) else hd.cover
+        if callable(hd.cover):
+            hd.cover = pm
+        if pm is not None and not pm.isNull():
+            path = QPainterPath()
+            path.addRoundedRect(art, 7, 7)
+            p.setClipPath(path)
+            p.drawPixmap(art.toRect(), pm.scaled(int(side * 2), int(side * 2), Qt.KeepAspectRatioByExpanding,
+                                                Qt.SmoothTransformation))
+            p.setClipping(False)
+        else:
+            p.setBrush(QColor(style.PANEL2))
+            p.drawRoundedRect(art, 7, 7)
+            ic = style.icon(self.ICONS.get(hd.kind, "fa6s.music"), style.MUTED).pixmap(20, 20)
+            p.drawPixmap(int(art.center().x() - 10), int(art.center().y() - 10), ic)
+        tx = art.right() + 14
+        tw = r.right() - tx - 40
+        f = QFont(self.view.font())
+        f.setBold(True)
+        f.setPointSizeF(f.pointSizeF() + 1.5)
+        p.setFont(f)
+        p.setPen(QColor(style.TEXT))
+        fm = p.fontMetrics()
+        p.drawText(QRectF(tx, art.top() + 1, tw, 22), Qt.AlignLeft | Qt.AlignVCenter,
+                   fm.elidedText(hd.title, Qt.ElideRight, int(tw)))
+        f.setBold(False)
+        f.setPointSizeF(f.pointSizeF() - 2.5)
+        p.setFont(f)
+        p.setPen(QColor(style.MUTED))
+        p.drawText(QRectF(tx, art.top() + 23, tw, 18), Qt.AlignLeft | Qt.AlignVCenter,
+                   p.fontMetrics().elidedText(hd.sub, Qt.ElideRight, int(tw)))
+        chev = style.icon("fa6s.chevron-right" if hd.folded else "fa6s.chevron-down", style.MUTED).pixmap(12, 12)
+        p.drawPixmap(int(r.right() - 30), int(r.center().y() - 4), chev)
+        p.restore()
+
+
 class PlaylistView(QTreeWidget):
     """Columns #, title, artist, album, length. Rows move by drag; files dropped from Explorer go in at the
-    drop point."""
+    drop point. With groups on, an album / the radio stations / loose tracks get a head above their first row;
+    a click on a head folds the group."""
     files_dropped = Signal(list, int)        # paths, row (-1 = end)
     reordered = Signal()
+    head_clicked = Signal(str)               # group key
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("playlist")
+        self.uid_role = Qt.UserRole + 1
+        self.heads: dict[int, GroupHead] = {}            # uid of a group's first track → its head
         self.setRootIsDecorated(False)
         self.setUniformRowHeights(True)
         self.setAlternatingRowColors(True)
@@ -409,6 +548,50 @@ class PlaylistView(QTreeWidget):
         self.setIndentation(0)
         self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setMouseTracking(True)
+        self.setItemDelegate(GroupDelegate(self))
+
+    def set_heads(self, heads: dict):
+        self.heads = heads
+        self.setUniformRowHeights(not heads)               # uniform heights are faster when there are none
+        self.scheduleDelayedItemsLayout()
+        self.viewport().update()
+
+    def last_column(self) -> int:
+        hdr = self.header()
+        for v in range(hdr.count() - 1, -1, -1):
+            c = hdr.logicalIndex(v)
+            if not hdr.isSectionHidden(c):
+                return c
+        return 0
+
+    def head_at(self, pos) -> GroupHead | None:
+        it = self.itemAt(pos)
+        if it is None:
+            return None
+        hd = self.heads.get(it.data(0, self.uid_role))
+        if hd is None:
+            return None
+        return hd if pos.y() < self.visualItemRect(it).top() + GroupDelegate.HEAD else None
+
+    def mousePressEvent(self, e):
+        hd = self.head_at(e.position().toPoint()) if e.button() == Qt.LeftButton else None
+        if hd is not None:
+            self.head_clicked.emit(hd.key)
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        if self.head_at(e.position().toPoint()) is not None:
+            e.accept()
+            return
+        super().mouseDoubleClickEvent(e)
+
+    def mouseMoveEvent(self, e):
+        on_head = self.head_at(e.position().toPoint()) is not None
+        self.viewport().setCursor(Qt.PointingHandCursor if on_head else Qt.ArrowCursor)
+        super().mouseMoveEvent(e)
 
     def dragEnterEvent(self, e):
         if e.mimeData().hasUrls() and e.source() is None:
@@ -440,6 +623,34 @@ class PlaylistView(QTreeWidget):
                 ch = top.takeChild(0)
                 self.insertTopLevelItem(i + 1, ch)
         self.reordered.emit()
+
+
+class NowPanel(QWidget):
+    """The left column: a soft glow of the album's colours behind the cover (when colours follow the cover)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.glow = False
+
+    def paintEvent(self, _):
+        if not self.glow:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        rad = max(self.width(), 300) * 1.15
+        c = QPointF(self.width() * 0.35, self.width() * 0.3)
+        g = QRadialGradient(c, rad)
+        c1 = QColor(style.ACCENT2)
+        c1.setAlpha(100 if style.IS_DARK else 46)
+        c2 = QColor(style.ACCENT)
+        c2.setAlpha(34 if style.IS_DARK else 16)
+        c3 = QColor(style.ACCENT)
+        c3.setAlpha(0)
+        g.setColorAt(0, c1)
+        g.setColorAt(0.45, c2)
+        g.setColorAt(1, c3)
+        p.fillRect(self.rect(), g)
+        p.end()
 
 
 class LyricsView(QListWidget):
@@ -540,6 +751,38 @@ def elide(label: QLabel, text: str, width: int | None = None):
     label.setToolTip(text if fm.horizontalAdvance(text) > w else "")
 
 
+class ElideLabel(QLabel):
+    """One line; text that does not fit ends with … and the whole of it is in the tooltip. text() is the full text."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._full = ""
+        self.setMinimumWidth(10)
+
+    def setText(self, text: str):
+        self._full = text or ""
+        self._fit()
+
+    def text(self) -> str:
+        return self._full
+
+    def _fit(self):
+        fm = self.fontMetrics()
+        w = max(40, self.width())
+        QLabel.setText(self, fm.elidedText(self._full, Qt.ElideRight, w))
+        self.setToolTip(self._full if fm.horizontalAdvance(self._full) > w else "")
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit()
+
+    def minimumSizeHint(self):
+        return QSize(10, super().minimumSizeHint().height())
+
+    def sizeHint(self):
+        return QSize(10, super().sizeHint().height())
+
+
 def exists(path: str) -> bool:
     return "://" in path or os.path.exists(path)
 
@@ -603,58 +846,58 @@ def _meter_gradient(top: float, bottom: float) -> QLinearGradient:
 
 
 class ChannelMeters(QWidget):
-    """Bars per channel with a dB grid and peak marks — under the cover. A click opens the room view."""
+    """A row per channel (FL, FC, FR, SUB, SL, SR…) with the level as a bar and a peak mark — under the cover.
+    A click opens the room view."""
     clicked = Signal()
+    ROW = 17
 
     def __init__(self, state: LevelState, parent=None):
         super().__init__(parent)
         self.state = state
         self.caption = ""
-        self.setFixedHeight(118)
+        self._n = 6
+        self.setFixedHeight(self._height(6))
         self.setCursor(Qt.PointingHandCursor)
 
+    def _height(self, n: int) -> int:
+        return 16 + self.ROW * n
+
     def paintEvent(self, _):
+        names = self.state.ch or ["FL", "FC", "FR", "LFE", "SL", "SR"]
+        if len(names) != self._n:                          # 2.0 / 5.1 / 7.1
+            self._n = len(names)
+            self.setFixedHeight(self._height(self._n))
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
         p.setPen(QPen(QColor(style.BORDER), 1))
         p.setBrush(QColor(style.PANEL))
         p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), 10, 10)
-        top, bot, x0, x1 = 10.0, h - 24.0, 34.0, w - 10.0
+        x0, x1 = 46.0, w - 14.0
         f = QFont(self.font())
-        f.setPointSizeF(7)
+        f.setPointSizeF(7.5)
+        f.setBold(True)
         p.setFont(f)
-        for db in (0, -12, -24, -36):
-            y = top + (bot - top) * (db / FLOOR_DB)
-            p.setPen(QColor(style.MUTED))
-            p.drawText(QRectF(2, y - 7, x0 - 7, 14), Qt.AlignRight | Qt.AlignVCenter, str(db))
-            p.setPen(QPen(style.fgc(16), 1))
-            p.drawLine(QPointF(x0, y), QPointF(x1, y))
-        names = self.state.ch or ["FL", "FC", "FR", "LFE", "SL", "SR"]
-        slot = (x1 - x0) / len(names)
-        bw = min(30.0, slot * 0.5)
-        grad = _meter_gradient(top, bot)
+        grad = QLinearGradient(x0, 0, x1, 0)
+        grad.setColorAt(0.0, QColor(style.ACCENT2))
+        grad.setColorAt(0.75, QColor(style.ACCENT))
+        grad.setColorAt(0.93, QColor("#ff6b6b"))
         for i, n in enumerate(names):
-            x = x0 + slot * i + (slot - bw) / 2
+            cy = 8 + self.ROW * i + self.ROW / 2
+            p.setPen(QColor(style.MUTED))
+            p.drawText(QRectF(10, cy - 8, x0 - 14, 16), Qt.AlignLeft | Qt.AlignVCenter, CH_LABEL.get(n, n))
+            bar = QRectF(x0, cy - 3, x1 - x0, 6)
             p.setPen(Qt.NoPen)
-            p.setBrush(style.fgc(14))
-            p.drawRoundedRect(QRectF(x, top, bw, bot - top), 3, 3)
+            p.setBrush(style.fgc(18))
+            p.drawRoundedRect(bar, 3, 3)
             fr = LevelState.frac(self.state.rms.get(n, FLOOR_DB))
             if fr > 0.002:
-                y = bot - (bot - top) * fr
                 p.setBrush(grad)
-                p.drawRoundedRect(QRectF(x, y, bw, bot - y), 3, 3)
+                p.drawRoundedRect(QRectF(x0, cy - 3, (x1 - x0) * fr, 6), 3, 3)
             pf = LevelState.frac(self.state.peak.get(n, FLOOR_DB))
             if pf > 0.002:
-                y = bot - (bot - top) * pf
-                p.setBrush(style.fgc())
-                p.drawRect(QRectF(x, y - 1, bw, 2))
-            f.setPointSizeF(8)
-            f.setBold(True)
-            p.setFont(f)
-            p.setPen(QColor(style.TEXT))
-            p.drawText(QRectF(x - 20, bot + 4, bw + 40, 16), Qt.AlignCenter, CH_LABEL.get(n, n))
-            f.setBold(False)
+                p.setBrush(style.fgc(220))
+                p.drawRect(QRectF(x0 + (x1 - x0) * pf - 1, cy - 5, 2, 10))
         p.end()
 
     def mouseReleaseEvent(self, e):
@@ -689,8 +932,12 @@ class RoomMeters(QWidget):
             a = lv[n]
             if a > 0.01:
                 g = QLinearGradient(pt, c)
-                g.setColorAt(0, QColor(111, 66, 193, int(170 * a)))
-                g.setColorAt(1, QColor(111, 66, 193, 0))
+                c0 = QColor(style.ACCENT2)
+                c0.setAlpha(int(170 * a))
+                c1 = QColor(style.ACCENT2)
+                c1.setAlpha(0)
+                g.setColorAt(0, c0)
+                g.setColorAt(1, c1)
                 p.setPen(QPen(QBrush(g), 2 + 7 * a, Qt.SolidLine, Qt.RoundCap))
                 p.drawLine(pt, c)
         p.setPen(Qt.NoPen)
@@ -708,8 +955,12 @@ class RoomMeters(QWidget):
             if a > 0.01:
                 rad = 30 + 28 * a
                 rg = QRadialGradient(pt, rad)
-                rg.setColorAt(0, QColor(13, 110, 253, int(180 * a)))
-                rg.setColorAt(1, QColor(13, 110, 253, 0))
+                c0 = QColor(style.ACCENT)
+                c0.setAlpha(int(180 * a))
+                c1 = QColor(style.ACCENT)
+                c1.setAlpha(0)
+                rg.setColorAt(0, c0)
+                rg.setColorAt(1, c1)
                 p.setPen(Qt.NoPen)
                 p.setBrush(rg)
                 p.drawEllipse(pt, rad, rad)

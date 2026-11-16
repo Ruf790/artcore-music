@@ -152,6 +152,7 @@ def test_stop_after_dups_and_settings(qapp, mpvmod, media, data_dir):
     assert 14 * 60 < w._sleep_left() <= 15 * 60
     w.set_sleep(0)
     assert w._sleep_left() == 0
+    w.cfg["groups"] = False                     # with groups on the album is in the group heads, not a column
     w._set_column("album", False)
     assert w.view.isColumnHidden(3) and "album" in w.cfg["hidden_cols"]
     w._set_column("album", True)

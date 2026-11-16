@@ -7,7 +7,7 @@ import threading
 import time
 
 from PySide6.QtCore import QByteArray, QObject, QPoint, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import (QActionGroup, QColor, QFont, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen,
+from PySide6.QtGui import (QActionGroup, QBrush, QColor, QFont, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen,
                            QPixmap, QShortcut)
 from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
                                QMainWindow, QTabBar,
@@ -21,8 +21,10 @@ from .i18n import t
 from .playlist import Playlist, Track, expand, fill_tags, is_url, write_m3u
 from .waveform import Waveforms, key_of
 from . import lyrics as lyrics_mod
-from .widgets import (ChannelMeters, ClickLabel, CoverView, LevelState, LyricsView, PlaylistView, RoomMeters,
-                      Toast, WaveSeekBar, ctl_button, elide, fmt_time, recolor_buttons, set_btn_icon)
+from .widgets import (ChannelMeters, ClickLabel, CoverView, ElideLabel, GroupHead, LevelState, LyricsView, NowPanel, PlaylistView,
+                      RoomMeters, Toast, WaveSeekBar, ctl_button, elide, fmt_time, recolor_buttons, set_btn_icon)
+from . import covercolor
+from .playlist import groups as make_groups
 
 COL_N, COL_TITLE, COL_ARTIST, COL_ALBUM, COL_LEN, COL_FAV = range(6)
 NCOLS = 6
@@ -30,6 +32,21 @@ COL_KEYS = {"n": COL_N, "artist": COL_ARTIST, "album": COL_ALBUM, "len": COL_LEN
 ROW_PAD = {"compact": 2, "normal": 5, "large": 9}
 SLEEP_MINUTES = (15, 30, 45, 60, 90, 120)
 UID = Qt.UserRole + 1
+
+
+def path_tip(tr: Track) -> str:
+    """The tooltip of a row: the folder and the file on their own lines, wrapped instead of one endless line."""
+    import html
+    if tr.is_stream:
+        return html.escape(tr.path)
+    folder, name = os.path.split(tr.path)
+    # a zero-width space after every separator lets a long folder wrap at the folders
+    folder = html.escape(folder).replace("\\", "\\\u200b").replace("/", "/\u200b")
+    out = (f"<div style='max-width: 520px'><span style='color: {style.MUTED}'>{t('tip_folder')}</span><br>"
+           f"{folder}<br><b>{html.escape(name)}</b>")
+    if tr.is_cue:
+        out += f"<br><span style='color: {style.MUTED}'>{t('cue_track')} {fmt_time(tr.start)}</span>"
+    return out + "</div>"
 
 
 class Bridge(QObject):
@@ -478,8 +495,9 @@ class MainWindow(QMainWindow):
 
     # ── building ──────────────────────────────────────────────
     def _build_now(self) -> QWidget:
-        w = QWidget()
+        w = NowPanel()
         w.setObjectName("nowPanel")
+        self.now_panel = w
         w.setMinimumWidth(300)
         w.setMaximumWidth(520)
         lay = QVBoxLayout(w)
@@ -490,9 +508,8 @@ class MainWindow(QMainWindow):
         self.cover.clicked.connect(self.jump_to_current)
         lay.addWidget(self.cover, 0)
         lay.addSpacing(10)
-        self.t_title = QLabel()
+        self.t_title = ElideLabel()                    # one line, cut with … (the full title in the tooltip)
         self.t_title.setObjectName("title")
-        self.t_title.setWordWrap(True)
         self.t_artist = QLabel()
         self.t_artist.setObjectName("artist")
         self.t_artist.setWordWrap(True)
@@ -522,6 +539,7 @@ class MainWindow(QMainWindow):
         self.t_next = QLabel()
         self.t_next.setObjectName("hint")
         self.t_next.setWordWrap(True)
+        self.t_next.setTextFormat(Qt.RichText)
         lay.addWidget(self.t_next)
         self.lyrics = LyricsView()
         self.lyrics.seek.connect(self.engine.seek)
@@ -668,6 +686,12 @@ class MainWindow(QMainWindow):
             self.view.setColumnWidth(COL_ARTIST, int(cols[0]))
             self.view.setColumnWidth(COL_ALBUM, int(cols[1]))
         self.view.itemActivated.connect(lambda it, _c: self._activate(it))
+        self.view.head_clicked.connect(self.toggle_group)
+        self._groups: list = []
+        self.group_timer = QTimer(self)
+        self.group_timer.setSingleShot(True)
+        self.group_timer.setInterval(120)
+        self.group_timer.timeout.connect(self._regroup)
         hdr.setContextMenuPolicy(Qt.CustomContextMenu)
         hdr.customContextMenuRequested.connect(self._header_menu)
         self.view.files_dropped.connect(self._dropped_on_list)
@@ -717,10 +741,9 @@ class MainWindow(QMainWindow):
         self.b_repeat = ctl_button("mdi6.repeat", t("repeat") + " (R)", 20, self.cycle_repeat)
         self.b_stop = ctl_button("fa6s.stop", t("stop"), 18, self.stop)
         left = QHBoxLayout()
-        left.addWidget(self.b_stop)
         left.addStretch(1)
         row.addLayout(left, 1)
-        for b in (self.b_shuffle, self.b_prev, self.b_play, self.b_next, self.b_repeat):
+        for b in (self.b_shuffle, self.b_stop, self.b_prev, self.b_play, self.b_next, self.b_repeat):
             row.addWidget(b)
         right = QHBoxLayout()
         right.setSpacing(4)
@@ -1058,12 +1081,15 @@ class MainWindow(QMainWindow):
                    else t("radio"))
         d = tr.duration()
         it.setText(COL_LEN, t("live") if tr.is_stream else fmt_time(d) if d else "")
-        it.setToolTip(COL_TITLE, tr.path + (f"\n{t('cue_track')} {fmt_time(tr.start)}" if tr.is_cue else ""))
+        it.setToolTip(COL_TITLE, path_tip(tr))
         playing = self.engine.cur is not None and tr.uid == self.engine.cur.uid
         f = QFont(self.view.font())
         f.setBold(playing)
+        tint = QColor(style.ACCENT)
+        tint.setAlpha(38 if style.IS_DARK else 26)
         for c in range(NCOLS):
             it.setFont(c, f)
+            it.setBackground(c, tint if playing else QBrush())
             it.setForeground(c, QColor(style.ACCENT_TEXT) if playing or (c == COL_N and qpos) else
                              QColor(style.TEXT if c != COL_N else style.MUTED))
         if playing and not self.engine.stopped:
@@ -1094,7 +1120,114 @@ class MainWindow(QMainWindow):
             self._filter(self.search.text())
         self._list_changed()
 
+    # ── groups ────────────────────────────────────────────────
+    def _folded(self) -> set:
+        if not hasattr(self.pl, "folded"):
+            self.pl.folded = set()
+        return self.pl.folded
+
+    def _regroup(self):
+        """Group heads above the first row of every album / radio run / loose tracks (not while searching)."""
+        self.group_timer.stop()
+        if not self.cfg.get("groups", True) or self._searching or not self.pl.tracks:
+            self._groups = []
+            if self.view.heads:
+                self.view.set_heads({})
+            for it in self.items.values():
+                if it.isHidden() and not self._searching:
+                    it.setHidden(False)
+            return
+        gs = make_groups(self.pl.tracks)
+        if len(gs) == 1 and gs[0].kind == "singles":     # nothing to group: a plain list
+            gs = []
+        folded = self._folded()
+        folded &= {g.key for g in gs}
+        heads: dict[int, GroupHead] = {}
+        old = {hd.key: hd for hd in self.view.heads.values()}
+        self.view.setUpdatesEnabled(False)
+        try:
+            for g in gs:
+                fold = g.key in folded
+                title, sub, cover = self._head_text(g)
+                hd = old.get(g.key)
+                if hd is None or hd.title != title or hd.sub != sub:
+                    hd = GroupHead(g.key, g.kind, title, sub, cover)
+                hd.folded = fold
+                hd.count = len(g.tracks)
+                heads[g.first.uid] = hd
+                for i, tr in enumerate(g.tracks):
+                    it = self.items.get(tr.uid)
+                    if it is not None:
+                        it.setHidden(fold and i > 0)
+        finally:
+            self.view.setUpdatesEnabled(True)
+        self._groups = gs
+        self.view.set_heads(heads)
+
+    def _head_text(self, g):
+        n = len(g.tracks)
+        length = g.length()
+        if g.kind == "radio":
+            return t("grp_radio"), t("grp_stations", n), None
+        if g.kind == "singles":
+            return t("grp_singles"), " · ".join(b for b in (t("grp_tracks", n), fmt_time(length) if length else "") if b), None
+        first = g.first
+        ext = os.path.splitext(first.path)[1].lstrip(".").upper()
+        bits = [g.artist(), g.year(), ext, t("grp_tracks", n), fmt_time(length) if length else ""]
+        path = first.path
+
+        def cover():
+            try:
+                data = meta.cover_bytes(path)
+            except Exception:
+                data = b""
+            if not data:
+                return None
+            pm = QPixmap()
+            pm.loadFromData(data)
+            return pm.scaled(96, 96, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation) if not pm.isNull() else None
+        return g.album() or os.path.basename(os.path.dirname(path)), " · ".join(b for b in bits if b), cover
+
+    def toggle_group(self, key: str, fold: bool | None = None):
+        folded = self._folded()
+        fold = (key not in folded) if fold is None else fold
+        if fold:
+            folded.add(key)
+        else:
+            folded.discard(key)
+        self._regroup()
+
+    def _unfold_for(self, tr: Track):
+        for g in self._groups:
+            if g.key in self._folded() and any(x.uid == tr.uid for x in g.tracks):
+                self.toggle_group(g.key, False)
+                return
+
+    # ── colours from the cover ────────────────────────────────
+    def _cover_colors(self, data: bytes | None):
+        colors = None
+        if self.cfg.get("cover_colors", True) and data:
+            colors = covercolor.pick(data, style.IS_DARK, style.PANEL)
+        self.now_panel.glow = colors is not None
+        self.now_panel.update()
+        if not style.set_cover(colors):
+            return
+        app = QApplication.instance()
+        app.setPalette(style.palette())
+        app.setStyleSheet(style.stylesheet())
+        self._tab_icons()
+        cur = self.engine.cur
+        if cur is not None:
+            self._refresh_item(cur.uid)
+        for w in (self.seekbar, self.meters):
+            w.update()
+        if self.levels_win is not None:
+            self.levels_win.room.update()
+        if self.mini is not None:
+            self.mini.apply_theme()
+
     def _list_changed(self):
+        self.group_timer.start()
         n = len(self.pl.tracks)
         total = sum(tr.duration() for tr in self.pl.tracks)
         self.pl_count.setText(t("pl_count", n, fmt_time(total)) if n else "")
@@ -1137,11 +1270,13 @@ class MainWindow(QMainWindow):
             for it in self.items.values():
                 it.setHidden(False)
             self.view.setUpdatesEnabled(True)
+            self._regroup()
             self._after_search()
             return
         if not self._searching:
             self._searching = True
             self._search_anchor = None
+            self.view.set_heads({})
         in_path = bool(self.cfg.get("search_path", True))
         self.view.setUpdatesEnabled(False)
         for uid, it in self.items.items():
@@ -1211,19 +1346,25 @@ class MainWindow(QMainWindow):
         pad = ROW_PAD.get(self.cfg.get("row_size", "normal"), 5)
         self.view.setStyleSheet(f"QTreeWidget#playlist::item {{ padding: {pad}px 4px; border: none; }}")
         hidden = set(self.cfg.get("hidden_cols") or [])
+        if self.cfg.get("groups", True):
+            hidden.add("album")                       # the album is in the group's head
         for key, col in COL_KEYS.items():
             self.view.setColumnHidden(col, key in hidden)
         if self._searching:
             self._filter(self.search.text())
+        self._regroup()
 
     def _header_menu(self, pos):
         m = QMenu(self)
         hidden = set(self.cfg.get("hidden_cols") or [])
         names = {"n": "#", "artist": t("col_artist"), "album": t("col_album"), "len": t("col_len"), "fav": "★"}
+        grouped = bool(self.cfg.get("groups", True))
         for key, name in names.items():
             a = m.addAction(name)
             a.setCheckable(True)
-            a.setChecked(key not in hidden)
+            a.setChecked(key not in hidden and not (grouped and key == "album"))
+            if grouped and key == "album":              # the album is in the group heads
+                a.setEnabled(False)
             a.triggered.connect(lambda on, k=key: self._set_column(k, on))
         m.exec(self.view.header().mapToGlobal(pos))
 
@@ -1582,6 +1723,7 @@ class MainWindow(QMainWindow):
                 except Exception:
                     tr.tagged = True
             self._refresh_item(tr.uid)
+            self._unfold_for(tr)
             it = self.items.get(tr.uid)
             if it is not None and not it.isHidden() and not self.view.underMouse() \
                     and self.cfg.get("follow_playing", True):
@@ -1630,6 +1772,8 @@ class MainWindow(QMainWindow):
             self.t_album.setText("")
             self.t_format.hide()
             self.cover.set_image(None)
+            self._cover_key = None
+            self._cover_colors(None)
             self._set_mini(None)
             self.setWindowTitle(APP_TITLE)
             self.l_pos.setText("0:00")
@@ -1653,6 +1797,7 @@ class MainWindow(QMainWindow):
             data = meta.cover_bytes(tr.path)
             self.cover.set_image(data or None)
             self._cover_data = data
+            self._cover_colors(data)
         self.cur_tags = meta.read(tr.path) if getattr(self, "_tags_path", "") != tr.path else self.cur_tags
         self._tags_path = tr.path
         self._render_format()
@@ -1679,6 +1824,7 @@ class MainWindow(QMainWindow):
             self._cover_key = (tr.path, "")
             self._cover_data = b""
             self.cover.set_image(None)
+            self._cover_colors(None)
         self.cur_tags = None
         self._tags_path = ""
         self._render_format()
@@ -1710,8 +1856,41 @@ class MainWindow(QMainWindow):
             self.t_next.setText(t("up_next_stop"))
             return
         nxt = self.engine.next_track(cur, auto=True) if cur is not None and not self.engine.stopped else None
-        self.t_next.setText(t("up_next", nxt.display()) if nxt is not None and nxt.uid != cur.uid else
-                            (t("up_next_repeat") if nxt is not None else ""))
+        if nxt is None:
+            self.t_next.setText("")
+            return
+        if nxt.uid == cur.uid:
+            self.t_next.setText(t("up_next_repeat"))
+            return
+        import html
+        upcoming = [nxt]
+        seen = {cur.uid, nxt.uid}
+        # what follows, without asking the engine again (that may reshuffle): the rest of the queue,
+        # then the playlist order after the track the playlist goes on from
+        more = list(self.engine.queue[1:]) if self.engine.queue and self.engine.queue[0] is nxt else []
+        if self.pl is self.engine.pl and self.engine.pl.repeat != "one":
+            seq = self.engine.pl._seq()
+            base = nxt if not self.engine.queue else (self.engine.ctx or cur)
+            i = next((k for k, x in enumerate(seq) if x.uid == base.uid), -1)
+            if i >= 0:
+                more += seq[i + 1:i + 4]
+        for x in more:
+            if len(upcoming) >= 3:
+                break
+            if x.uid not in seen:
+                seen.add(x.uid)
+                upcoming.append(x)
+        rows = []
+        for i, x in enumerate(upcoming, 1):
+            who = x.artist or x.albumartist
+            rows.append(f"<tr><td style='color: {style.MUTED}; padding-right: 8px'>{i}</td><td>"
+                        f"<span style='color: {style.TEXT}'>{html.escape(x.display_title())}</span>"
+                        + (f" <span style='color: {style.MUTED}'>— {html.escape(who)}</span>" if who else "")
+                        + "</td></tr>")
+        self.t_next.setText(f"<div style='color: {style.MUTED}; font-weight: 600; letter-spacing: 1px'>"
+                            f"{t('up_next_head')}</div><table cellspacing='0' cellpadding='2'>"
+                            + "".join(rows) + "</table>")
+        self.t_next.setToolTip(t("up_next", nxt.display()))
 
     def _on_pos(self, pos: float, dur: float):
         self._last_pos = (pos, dur)
@@ -2121,7 +2300,9 @@ class MainWindow(QMainWindow):
 
     def _apply_theme(self):
         """Everything that was coloured when it was built: icons, rows, lyrics, covers, the mini player."""
+        style.set_cover(None)
         style.apply(QApplication.instance(), self.cfg.get("theme"))
+        self._cover_colors(getattr(self, "_cover_data", None) if self.engine.cur is not None else None)
         self.setUpdatesEnabled(False)
         try:
             recolor_buttons(self)
