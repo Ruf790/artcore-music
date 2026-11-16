@@ -130,6 +130,9 @@ class WaveSeekBar(SeekBar):
         self.peaks: bytes = b""
         self.loading = False
         self.enabled_wave = True
+        self.live = False                    # internet radio: a wave of what plays now, moving right → left
+        self.live_vals: list[float] = []
+        self._live_tick = 0
         self._bars: list[float] = []
         self._bars_w = -1
         self.setFixedHeight(self.HEIGHT)
@@ -156,8 +159,63 @@ class WaveSeekBar(SeekBar):
         self._bars, self._bars_w = out, n
         return out
 
+    LIVE_KEEP = 900                       # values kept (more than the widest window shows)
+
+    def set_live(self, on: bool):
+        if on != self.live:
+            self.live = on
+            self.live_vals = []
+            self.update()
+
+    def push(self, v: float):
+        """A new level (0…1) of what plays — every meter tick; every 2nd one becomes a bar (~15 per second)."""
+        self._live_tick += 1
+        if self._live_tick % 2:
+            return
+        self.live_vals.append(max(0.0, min(1.0, v)))
+        if len(self.live_vals) > self.LIVE_KEEP:
+            del self.live_vals[:len(self.live_vals) - self.LIVE_KEEP]
+        self.update()
+
     def _wave_on(self) -> bool:
-        return self.enabled_wave and bool(self.peaks or self.loading)
+        return self.enabled_wave and (self.live or bool(self.peaks or self.loading))
+
+    def _paint_live(self, p: QPainter, w: int, h: int, base: int):
+        """Newest bar at the right edge; older ones move left and fade."""
+        step = self.BAR + self.GAP
+        n = max(1, w // step)
+        vals = self.live_vals[-n:]
+        g = QLinearGradient(0, 0, w, 0)
+        c0 = QColor(style.ACCENT2)
+        c0.setAlpha(60)
+        g.setColorAt(0, c0)
+        g.setColorAt(0.35, QColor(style.ACCENT2))
+        g.setColorAt(1, QColor(style.ACCENT))
+        top = QBrush(g)
+        rg = QLinearGradient(0, 0, w, 0)
+        r0, r1 = QColor(style.ACCENT2), QColor(style.ACCENT)
+        r0.setAlpha(15)
+        r1.setAlpha(80)
+        rg.setColorAt(0, r0)
+        rg.setColorAt(1, r1)
+        ref = QBrush(rg)
+        p.setPen(Qt.NoPen)
+        p.setBrush(style.fgc(30))
+        p.drawRect(QRectF(0, base - 1, w, 1))                    # the base line where there is nothing yet
+        # loud, compressed radio would be a flat wall: stretch what the last seconds span to the full height
+        if vals:
+            lo, hi = min(vals), max(vals)
+            if hi - lo > 0.04:
+                vals = [0.12 + 0.88 * (v - lo) / (hi - lo) for v in vals]
+        x0 = w - len(vals) * step
+        for i, v in enumerate(vals):
+            x = x0 + i * step
+            up = max(1.0, v * (base - 3))
+            down = max(1.0, v * (h - base - 2) * 0.85)
+            p.setBrush(top)
+            p.drawRoundedRect(QRectF(x, base - up, self.BAR, up), 1.2, 1.2)
+            p.setBrush(ref)
+            p.drawRoundedRect(QRectF(x, base + 1, self.BAR, down), 1.2, 1.2)
 
     def mouseMoveEvent(self, e):
         super().mouseMoveEvent(e)
@@ -174,6 +232,10 @@ class WaveSeekBar(SeekBar):
         p.translate(0, top0)
         h = h0 - top0
         base = round(h * 0.68)
+        if self.live:
+            self._paint_live(p, w, h, base)
+            p.end()
+            return
         step = self.BAR + self.GAP
         n = max(1, w // step)
         frac = self.pos_ / self.dur if self.dur else 0.0
