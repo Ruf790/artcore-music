@@ -43,8 +43,8 @@ class SettingsDialog(QDialog):
         "general":  [("grp_start", ("resume", "resume_play", "single_window", "check_updates")),
                      ("grp_window", ("on_top", "media_keys", "smtc", "tray", "close_to_tray", "notify"))],
         "playlist": [("grp_search", ("search_path", "search_clear_on_play")),
-                     ("tab_playlist", ("follow_playing", "skip_dups", "confirm_clear"))],
-        "playback": [("grp_look", ("waveform", "time_remaining", "lyrics", "meters"))],
+                     ("tab_playlist", ("groups", "follow_playing", "skip_dups", "confirm_clear"))],
+        "playback": [("grp_look", ("cover_colors", "waveform", "time_remaining", "lyrics", "meters"))],
     }
 
     def __init__(self, cfg: dict, parent=None):

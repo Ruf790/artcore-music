@@ -63,9 +63,41 @@ THEMES: dict[str, dict] = {
         ph1="#f5dde7", ph2="#eadcf3", ph_icon="#c9a0b4", wave="#d6336c", spk="#dcbfcc",
         mini_cover=(255, 246, 250, 170), mini_plain=(255, 246, 250, 75), toast=(255, 255, 255, 242),
     ),
+    "sky": dict(                                     # pale sky, blue → turquoise
+        dark=False, ru="Небо", en="Sky",
+        bg="#eef5fc", panel="#ffffff", panel2="#e2edf9", border="#cddcef", text="#14263d", muted="#55698a",
+        accent="#1971c2", accent2="#0c8599",
+        fg="#14263d", accent_text="#1864ab", star="#f59f00", star_off="#c3d2e6", alt="#f5f9fe",
+        ph1="#d8e7f7", ph2="#d3eef2", ph_icon="#8fa9c9", wave="#1971c2", spk="#b8cbe3",
+        mini_cover=(244, 249, 255, 168), mini_plain=(244, 249, 255, 70), toast=(255, 255, 255, 240),
+    ),
+    "lavender": dict(                                # lavender, violet → raspberry
+        dark=False, ru="Лаванда", en="Lavender",
+        bg="#f3f0fb", panel="#ffffff", panel2="#e9e3f7", border="#d9d0ef", text="#241b3d", muted="#665c8a",
+        accent="#7048e8", accent2="#c2255c",
+        fg="#241b3d", accent_text="#5f3dc4", star="#f08c00", star_off="#d3cae9", alt="#f9f7fe",
+        ph1="#e6def7", ph2="#f3dcea", ph_icon="#a99bd0", wave="#7048e8", spk="#cfc4ea",
+        mini_cover=(249, 246, 255, 170), mini_plain=(249, 246, 255, 72), toast=(255, 255, 255, 242),
+    ),
+    "peach": dict(                                   # warm peach, orange → pink
+        dark=False, ru="Персик", en="Peach",
+        bg="#fdf1ea", panel="#fffaf6", panel2="#f9e3d6", border="#efcfbd", text="#3a2218", muted="#80594a",
+        accent="#d9480f", accent2="#c2255c",
+        fg="#3a2218", accent_text="#b8400b", star="#e8a317", star_off="#ebcbbb", alt="#fff7f2",
+        ph1="#f8dccb", ph2="#f6d5df", ph_icon="#c99a85", wave="#e8590c", spk="#e8c6b4",
+        mini_cover=(255, 247, 241, 170), mini_plain=(255, 247, 241, 76), toast=(255, 252, 248, 242),
+    ),
+    "snow": dict(                                    # neutral white, graphite (colour comes from the covers)
+        dark=False, ru="Снег", en="Snow",
+        bg="#f6f6f4", panel="#ffffff", panel2="#ececea", border="#dadad6", text="#16171a", muted="#5f6168",
+        accent="#25262b", accent2="#495057",
+        fg="#16171a", accent_text="#16171a", star="#f59f00", star_off="#d0d0cc", alt="#fafaf9",
+        ph1="#e6e6e3", ph2="#dededb", ph_icon="#a3a3a0", wave="#25262b", spk="#cfcfcb",
+        mini_cover=(250, 250, 248, 172), mini_plain=(250, 250, 248, 74), toast=(255, 255, 255, 242),
+    ),
 }
 
-ORDER = ["dark", "light", "paper", "mint", "sakura"]
+ORDER = ["dark", "light", "paper", "mint", "sakura", "sky", "lavender", "peach", "snow"]
 
 
 def valid(name) -> str:

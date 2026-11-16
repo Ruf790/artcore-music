@@ -326,6 +326,68 @@ def expand(paths: list[str]) -> list[Track]:
     return stamp(out)
 
 
+# ── groups in the list: an album, the radio stations, loose tracks ───────────
+@dataclass
+class Group:
+    kind: str                          # "album" | "radio" | "singles"
+    key: str                           # stays the same while the tracks stay (folding is remembered by it)
+    tracks: list = field(default_factory=list)
+
+    @property
+    def first(self) -> Track:
+        return self.tracks[0]
+
+    def length(self) -> float:
+        return sum(x.duration() for x in self.tracks)
+
+    def artist(self) -> str:
+        """The album artist, or the one artist of every track, or ""."""
+        aa = {x.albumartist for x in self.tracks if x.albumartist}
+        if len(aa) == 1:
+            return aa.pop()
+        ar = {x.artist for x in self.tracks if x.artist}
+        return ar.pop() if len(ar) == 1 else (self.first.albumartist or "")
+
+    def year(self) -> str:
+        return next((x.year for x in self.tracks if x.year), "")
+
+    def album(self) -> str:
+        return next((x.album for x in self.tracks if x.album), "")
+
+
+def _gkey(tr: Track) -> str:
+    if tr.is_stream:
+        return "radio"
+    if tr.album or tr.cue:
+        return "album:" + tr.album_key
+    return ""
+
+
+def groups(tracks: list[Track]) -> list[Group]:
+    """Runs of the list: tracks of one album (two or more in a row), radio stations, and the loose tracks
+    between them. Every track is in exactly one group, in list order."""
+    runs: list[tuple[str, list[Track]]] = []
+    for tr in tracks:
+        k = _gkey(tr)
+        if runs and runs[-1][0] == k:
+            runs[-1][1].append(tr)
+        else:
+            runs.append((k, [tr]))
+    out: list[Group] = []
+    for k, trs in runs:
+        if k.startswith("album:") and len(trs) < 2:
+            k = ""                                         # one track of an album: a loose track
+        if k == "radio":
+            out.append(Group("radio", "radio:%d" % trs[0].uid, list(trs)))
+        elif k:
+            out.append(Group("album", k, list(trs)))
+        elif out and out[-1].kind == "singles":
+            out[-1].tracks.extend(trs)
+        else:
+            out.append(Group("singles", "singles:%d" % trs[0].uid, list(trs)))
+    return out
+
+
 class Playlist:
     """The list plus the play order: repeat off / all / one, shuffle (a shuffled order of uids)."""
 

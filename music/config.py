@@ -57,6 +57,8 @@ DEFAULTS = {
     "lyrics":        True,          # look for lyrics (.lrc / .txt next to the track, or in its tags)
     "lyrics_show":   True,
     "meters":        True,          # channel level bars under the cover (V = the room view)
+    "cover_colors":  True,          # the accent follows the album cover
+    "groups":        True,          # playlist groups: albums with a header, radio stations, loose tracks
     "mini_style":    "card",        # the mini player: card | strip
     "mini_opacity":  85,            # %, of its background
     "mini_hover_opaque": True,      # fully opaque under the mouse
