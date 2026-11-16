@@ -584,14 +584,23 @@ class MainWindow(QMainWindow):
         show_bars = bool(self.cfg.get("meters", True)) and playing
         self.meters.setVisible(show_bars)
         room = self.levels_win is not None and self.levels_win.isVisible()
-        need = (show_bars and self.isVisible()) or room
+        live = playing and self.seekbar.live                  # the radio's live wave needs the levels too
+        need = (show_bars and self.isVisible()) or room or live
         if need and not self.meter_timer.isActive():
             self.meter_timer.start()
         elif not need and self.meter_timer.isActive():
             self.meter_timer.stop()
 
     def _meter_tick(self):
-        if self.levels.feed(self.engine.levels(), time.monotonic()) or not self.levels.ch:
+        lv = self.engine.levels()
+        if self.seekbar.live:
+            v = 0.0
+            for _n, rms, peak in lv:
+                v = max(v, 0.65 * LevelState.frac(rms) + 0.35 * LevelState.frac(peak))
+            self.seekbar.push(v)
+            if self.mini is not None and self.mini.isVisible() and self.mini.seek.live:
+                self.mini.seek.push(v)
+        if self.levels.feed(lv, time.monotonic()) or not self.levels.ch:
             if self.meters.isVisible():
                 self.meters.update()
             if self.levels_win is not None and self.levels_win.isVisible():
@@ -1741,8 +1750,13 @@ class MainWindow(QMainWindow):
         if self.mini is not None:
             self.mini.seek.set_wave_enabled(bool(self.cfg.get("waveform", True)))
             self.mini.seek.set_peaks(self.seekbar.peaks or None, self.seekbar.loading)
+            self.mini.seek.set_live(self.seekbar.live)
 
     def _load_wave(self, tr: Track | None):
+        live = tr is not None and tr.is_stream and bool(self.cfg.get("waveform", True))
+        self.seekbar.set_live(live)
+        if self.mini is not None:
+            self.mini.seek.set_live(live)
         if tr is None or tr.is_stream or not self.cfg.get("waveform", True):
             self._wave_key = ""
             self.seekbar.set_peaks(None)

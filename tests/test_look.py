@@ -200,3 +200,42 @@ def test_meters_rows_follow_the_channels(qapp):
     st.ch = ["FL", "FR", "FC", "LFE", "BL", "BR", "SL", "SR"]
     m.grab()
     assert m.height() > h6
+
+
+def test_radio_has_a_live_wave(qapp, mpvmod, media, data_dir, icy_server, tmp_path):
+    url, stop = icy_server
+    pls = tmp_path / "live.pls"
+    pls.write_text(f"[playlist]\nnumberofentries=1\nFile1={url}\nTitle1=Live FM\nLength1=-1\n", encoding="utf-8")
+    w = _win(mpvmod)
+    try:
+        w.open_paths([str(pls)])
+        assert pump(qapp, 10, lambda: w.seekbar.live and len(w.seekbar.live_vals) > 10)
+        assert w.seekbar._wave_on() and not w.seekbar.peaks
+        assert pump(qapp, 10, lambda: max(w.seekbar.live_vals) > 0.05)    # it moves with the sound
+        assert w.meter_timer.isActive()
+        img = w.seekbar.grab().toImage()
+        right = img.pixelColor(img.width() - 3, int(img.height() * 0.6))
+        assert right.alpha() > 0 and right != img.pixelColor(2, 2)     # the newest bars are at the right edge
+        # a file again: the ordinary waveform, the live one is gone
+        w.open_paths([os.path.join(media, "Stereo Album")])
+        w.engine.play(w.pl.tracks[-1])
+        assert pump(qapp, 6, lambda: not w.seekbar.live)
+        assert not w.seekbar.live_vals
+    finally:
+        w.close()
+
+
+def test_live_wave_widget(qapp):
+    from music.widgets import WaveSeekBar
+    b = WaveSeekBar()
+    b.resize(400, b.height())
+    b.set_live(True)
+    for i in range(400):
+        b.push((i % 20) / 20)
+    assert len(b.live_vals) == 200                                  # every second tick becomes a bar
+    for _ in range(2000):
+        b.push(0.5)
+    assert len(b.live_vals) == b.LIVE_KEEP
+    b.grab()
+    b.set_live(False)
+    assert not b.live_vals and not b._wave_on()
