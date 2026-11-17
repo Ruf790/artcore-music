@@ -185,7 +185,10 @@ def test_settings_dialog_tabs(qapp, data_dir):
     from music.dialogs import SettingsDialog
     cfg = config.load()
     d = SettingsDialog(cfg)
-    assert d.tabs.count() == 3
+    assert d.tabs.count() == 4                                   # general, playlist, controls, remote
+    assert len(d.remote_code.text()) == 4 and not d.remote_on.isChecked()
+    d.remote_on.setChecked(True)
+    d.remote_port.setValue(47999)
     d.rows.setCurrentIndex(d.rows.findData("compact"))
     d.cols["artist"].setChecked(False)
     d.spins["seek_step"].setValue(10)
@@ -193,6 +196,7 @@ def test_settings_dialog_tabs(qapp, data_dir):
     d.accept()
     assert cfg["row_size"] == "compact" and cfg["hidden_cols"] == ["artist"]
     assert cfg["seek_step"] == 10 and cfg["tray"] is True
+    assert cfg["remote"] is True and cfg["remote_port"] == 47999
 
 
 def test_waveform(qapp, mpvmod, media, data_dir):

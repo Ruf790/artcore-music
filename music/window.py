@@ -481,6 +481,7 @@ class MainWindow(QMainWindow):
         self._show_track(None)
         self._apply_view_options()
         self._setup_tray()
+        self._setup_remote()
 
         self.save_timer = QTimer(self)
         self.save_timer.setInterval(self.SAVE_EVERY_MS)
@@ -882,6 +883,8 @@ class MainWindow(QMainWindow):
             else:
                 self.tabbar.setTabIcon(i, style.icon("fa6s.music", "#00000000"))
             self.tabbar.setTabToolTip(i, f"{p.name} — {t('pl_count', len(p.tracks), fmt_time(sum(x.duration() for x in p.tracks)))}")
+        if getattr(self, "remote", None) is not None:
+            self.remote.touch()
 
     def _tab_changed(self, i: int):
         if not 0 <= i < len(self.pls) or self.pls[i] is self.pl:
@@ -1247,6 +1250,8 @@ class MainWindow(QMainWindow):
         self._update_next_label()
         self._dirty = True
         self.dirty_timer.start()
+        if getattr(self, "remote", None) is not None:
+            self.remote.touch()
 
     def _refresh_item(self, uid: int):
         it = self.items.get(uid)
@@ -1670,6 +1675,8 @@ class MainWindow(QMainWindow):
         self.engine.set_volume(int(v), bool(self.cfg.get("muted")))
         self.l_vol.setText(f"{int(v)}%")
         self._sync_mute_icon()
+        if getattr(self, "remote", None) is not None:
+            self.remote.poke()
 
     def toggle_mute(self):
         self.cfg["muted"] = not self.cfg.get("muted")
@@ -2346,8 +2353,11 @@ class MainWindow(QMainWindow):
         lang = self.cfg.get("language")
         keys = self.cfg.get("media_keys")
         top = self.cfg.get("on_top")
-        d = SettingsDialog(self.cfg, self)
+        remote = (bool(self.cfg.get("remote")), int(self.cfg.get("remote_port") or 0))
+        d = SettingsDialog(self.cfg, self, remote=self.remote)
         if d.exec():
+            if (bool(self.cfg.get("remote")), int(self.cfg.get("remote_port") or 0)) != remote:
+                self._apply_remote(ask_firewall=True)
             config.save(self.cfg)
             if theme != self.cfg.get("theme"):
                 self._apply_theme()
@@ -2367,6 +2377,27 @@ class MainWindow(QMainWindow):
                 self.toggle_on_top()
             if lang != self.cfg.get("language"):
                 QMessageBox.information(self, APP_TITLE, t("lang_restart"))
+
+    # ── the phone remote (ArtCore Music Remote) ──────────────
+    def _setup_remote(self):
+        from .remote import RemoteServer, WindowHost
+        self.remote = RemoteServer(WindowHost(self), self.cfg, self)
+        for sig in (self.engine.track_changed, self.engine.paused_changed, self.engine.stream_title,
+                    self.engine.format_changed, self.engine.queue_changed):
+            sig.connect(lambda *_: self.remote.poke())
+        self.remote.phone_connected.connect(lambda name: self.toast.show_text(t("remote_phone_in", name), 2200))
+        self.remote.clients_changed.connect(lambda: config.save(self.cfg))
+        if self.cfg.get("remote"):
+            self._apply_remote()
+
+    def _apply_remote(self, ask_firewall: bool = False):
+        """Start / stop / move the server as the settings say; turning it on asks Windows Firewall once."""
+        from . import firewall
+        port = int(self.cfg.get("remote_port") or 0)
+        if self.cfg.get("remote") and ask_firewall and firewall.rule_ok(port) is False:
+            self.cfg["remote_fw"] = firewall.allow(port)
+        if not self.remote.apply():
+            QMessageBox.warning(self, APP_TITLE, t("remote_listen_fail", port, self.remote.error))
 
     def keys_dialog(self):
         from .dialogs import KeysDialog
@@ -2684,6 +2715,7 @@ class MainWindow(QMainWindow):
             self.smtc.stop()
         self.waves.stop()
         winint.unregister_media_keys(int(self.winId()), self._hotkeys)
+        self.remote.shutdown()
         self.engine.shutdown()
         self.sleep_timer.stop()
         if self.tray is not None:

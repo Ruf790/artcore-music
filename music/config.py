@@ -63,6 +63,13 @@ DEFAULTS = {
     "mini_opacity":  85,            # %, of its background
     "mini_hover_opaque": True,      # fully opaque under the mouse
     "mini_on_top":   True,          # the lyrics panel under the cover          # the seek bar shows the waveform of the track        # the right time label shows −remaining
+    # the phone remote (ArtCore Music Remote for Android)
+    "remote":        False,         # the server is on
+    "remote_port":   47870,         # TCP (WebSocket); the UDP beacon goes to 47871
+    "remote_code":   "",            # the 4-digit pairing code (made on the first start)
+    "remote_devices": [],           # paired phones: id, name, token hash, dates, last address
+    "remote_id":     "",            # this PC for the phones (stays the same)
+    "remote_fw":     None,          # the firewall rule was added (True) / refused (False) / not asked
     # window
     "media_keys":    True,          # global ⏮ ⏯ ⏭ keys of the keyboard
     "check_updates": True,
@@ -144,11 +151,14 @@ def load() -> dict:
         cfg["hidden_cols"] = []
     cfg["hidden_cols"] = [c for c in cfg["hidden_cols"] if c in ("n", "artist", "album", "len", "fav")]
     for key, lo, hi in (("seek_step", 1, 60), ("seek_step_big", 5, 600), ("volume_step", 1, 20),
-                        ("prev_restart", 0, 30), ("fade_pause", 0, 2000), ("samplerate", 0, 384000)):
+                        ("prev_restart", 0, 30), ("fade_pause", 0, 2000), ("samplerate", 0, 384000),
+                        ("remote_port", 1024, 65535)):
         try:
             cfg[key] = max(lo, min(hi, int(cfg.get(key))))
         except (TypeError, ValueError):
             cfg[key] = DEFAULTS[key]
+    if not isinstance(cfg.get("remote_devices"), list):
+        cfg["remote_devices"] = []
     return cfg
 
 
