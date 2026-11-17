@@ -443,3 +443,48 @@ def test_meters_follow_a_stereo_output(qapp, mpvmod, media, data_dir):
     assert pump(qapp, 6, lambda: w.levels.ch and max(w.levels.rms.values()) > -40)
     assert w.levels.ch == ["FL", "FR"]
     w.close()
+
+
+def test_list_shows_the_playing_track(qapp, mpvmod, media, data_dir):
+    """1.8.1: a playing tab opens on its track (start, tab switch), and a new track out of sight is brought in."""
+    w = _win(mpvmod, confirm_clear=False, skip_dups=False, groups=False)
+    w.resize(1200, 640)
+    for _ in range(12):
+        w.add_paths([os.path.join(media, "Stereo Album")])
+    pump(qapp, 0.6)
+    pl = w.pl
+    assert len(pl.tracks) >= 30
+
+    def seen(tr):
+        it = w.items[tr.uid]
+        r = w.view.visualItemRect(it)
+        return r.isValid() and r.top() >= 0 and r.bottom() <= w.view.viewport().height()
+
+    far = pl.tracks[-3]
+    w.play_uid(far.uid)
+    pump(qapp, 0.3)
+    w.view.scrollToTop()
+    pump(qapp, 0.1)
+    assert not seen(far)
+    w.new_tab("Other")                                   # look elsewhere, then come back: on the track, not the top
+    pump(qapp, 0.1)
+    w.tabbar.setCurrentIndex(0)
+    pump(qapp, 0.3)
+    assert w.pl is pl and seen(far)
+    # the next track, out of sight: brought into view
+    w.view.scrollToTop()
+    pump(qapp, 0.1)
+    w.next()
+    pump(qapp, 0.4)
+    assert seen(w.engine.cur)
+    # the setting off: the list stays where it was
+    w.cfg["follow_playing"] = False
+    w.view.scrollToTop()
+    w.tabbar.setCurrentIndex(1)
+    pump(qapp, 0.1)
+    pl.scroll = 0
+    w.tabbar.setCurrentIndex(0)
+    pump(qapp, 0.3)
+    assert w.view.verticalScrollBar().value() == 0
+    w.engine.stop()
+    w.close()
