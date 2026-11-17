@@ -109,6 +109,27 @@ def selftest() -> int:
             lines.append(f"taskbar list: {ok}, icons: {all(icon)}")
             if not ok or not all(icon):
                 raise RuntimeError("ITaskbarList3 / HICON failed")
+        # the phone remote: QtWebSockets is in the build and a phone gets in with the code
+        from PySide6.QtCore import QUrl
+        from PySide6.QtWebSockets import QWebSocket
+        import json as _json
+        if not win.remote.start(0):
+            raise RuntimeError("remote server: " + win.remote.error)
+        ws, got = QWebSocket(), []
+        ws.textMessageReceived.connect(lambda m: got.append(_json.loads(m)))
+        ws.connected.connect(lambda: ws.sendTextMessage(_json.dumps(
+            {"type": "hello", "proto": 1, "device": "selftest", "id": "selftest", "code": cfg["remote_code"]})))
+        ws.open(QUrl(f"ws://127.0.0.1:{win.remote.port}"))
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 8 and not any(m.get("type") == "playlists" for m in got):
+            app.processEvents()
+            time.sleep(0.02)
+        kinds = [m.get("type") for m in got]
+        lines.append(f"remote: port {win.remote.port}, got {kinds}")
+        if "welcome" not in kinds or "playlists" not in kinds:
+            raise RuntimeError("the remote did not answer")
+        ws.close()
+        win.remote.stop()
         win.close()
         with open(out, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")

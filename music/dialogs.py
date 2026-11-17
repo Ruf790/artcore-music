@@ -47,9 +47,10 @@ class SettingsDialog(QDialog):
         "playback": [("grp_look", ("cover_colors", "waveform", "time_remaining", "lyrics", "meters"))],
     }
 
-    def __init__(self, cfg: dict, parent=None):
+    def __init__(self, cfg: dict, parent=None, remote=None):
         super().__init__(parent)
         self.cfg = cfg
+        self.remote = remote
         self.setWindowTitle(t("settings") + " — " + APP_TITLE)
         self.setMinimumWidth(560)
         lay = QVBoxLayout(self)
@@ -149,7 +150,139 @@ class SettingsDialog(QDialog):
             f.addRow("", cb)
         c.addWidget(box)
         c.addStretch(1)
+        self._remote_page()
         lay.addWidget(_buttons(self))
+
+    # ── the phone remote
+    def _remote_page(self):
+        from .remote import DEFAULT_PORT, Pairing, RemoteServer
+        r = self._page("tab_remote")
+        box = QGroupBox(t("grp_remote"))
+        f = QFormLayout(box)
+        f.setVerticalSpacing(9)
+        self.remote_on = QCheckBox(t("opt_remote"))
+        self.remote_on.setChecked(bool(self.cfg.get("remote")))
+        f.addRow(self.remote_on)
+        self.remote_port = QSpinBox()
+        self.remote_port.setRange(1024, 65535)
+        self.remote_port.setValue(int(self.cfg.get("remote_port") or DEFAULT_PORT))
+        self.remote_port.setMaximumWidth(130)
+        f.addRow(t("remote_port"), self.remote_port)
+        code_row = QHBoxLayout()
+        self.remote_code = QLabel()
+        self.remote_code.setObjectName("remoteCode")
+        self.remote_code.setStyleSheet("font-size: 20pt; font-weight: 700; letter-spacing: 6px;")
+        self.remote_code.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        code_row.addWidget(self.remote_code)
+        b_code = QPushButton(t("remote_new_code"))
+        b_code.clicked.connect(self._remote_new_code)
+        code_row.addWidget(b_code)
+        code_row.addStretch(1)
+        f.addRow(t("remote_code"), code_row)
+        f.addRow("", _hint(t("remote_code_hint")))
+        addrs = RemoteServer.addresses()
+        self.remote_addr = QLabel(", ".join(addrs) if addrs else "—")
+        self.remote_addr.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        f.addRow(t("remote_addresses"), self.remote_addr)
+        self.remote_status = _hint("")
+        f.addRow("", self.remote_status)
+        r.addWidget(box)
+
+        box = QGroupBox(t("grp_phones"))
+        v = QVBoxLayout(box)
+        from PySide6.QtWidgets import QListWidget
+        self.phones = QListWidget()
+        self.phones.setMinimumHeight(110)
+        v.addWidget(self.phones)
+        row = QHBoxLayout()
+        self.b_forget = QPushButton(t("remote_forget"))
+        self.b_forget.clicked.connect(self._remote_forget)
+        row.addWidget(self.b_forget)
+        row.addStretch(1)
+        v.addLayout(row)
+        r.addWidget(box)
+
+        from . import firewall
+        self.fw_box = QGroupBox(t("grp_firewall"))
+        fv = QVBoxLayout(self.fw_box)
+        self.fw_hint = _hint(t("remote_fw_hint"))
+        fv.addWidget(self.fw_hint)
+        b_fw = QPushButton(t("remote_fw_allow"))
+        b_fw.clicked.connect(self._remote_firewall)
+        fw_row = QHBoxLayout()
+        fw_row.addWidget(b_fw)
+        fw_row.addStretch(1)
+        fv.addLayout(fw_row)
+        r.addWidget(self.fw_box)
+        self.fw_box.setVisible(firewall.IS_WIN and self.cfg.get("remote") and
+                               firewall.rule_ok(self.remote_port.value()) is False)
+        r.addStretch(1)
+        if self.remote is None:                        # the dialog on its own (tests): the code still shows
+            Pairing(self.cfg)
+        self._remote_fill()
+        if self.remote is not None:
+            self.remote.clients_changed.connect(self._remote_fill)
+
+    def _remote_fill(self):
+        try:
+            self.phones.count()
+        except RuntimeError:                           # the dialog is gone
+            return
+        self.remote_code.setText(self.cfg.get("remote_code", ""))
+        self.phones.clear()
+        from PySide6.QtWidgets import QListWidgetItem
+        import time as _time
+        for d in reversed(self.cfg.get("remote_devices") or []):
+            online = self.remote is not None and self.remote.is_online(d.get("id"))
+            when = _time.strftime("%d.%m.%Y %H:%M", _time.localtime(int(d.get("seen") or 0)))
+            text = f"{d.get('name') or 'Android'}  ·  " + (t("remote_online", d.get("ip", "")) if online
+                                                             else t("remote_seen", when))
+            it = QListWidgetItem(style.icon("fa6s.mobile-screen", style.ACCENT_TEXT if online else style.MUTED), text)
+            it.setData(Qt.UserRole, d.get("id"))
+            self.phones.addItem(it)
+        if not self.phones.count():
+            it = QListWidgetItem(t("remote_no_phones"))
+            it.setFlags(Qt.NoItemFlags)
+            self.phones.addItem(it)
+        self.b_forget.setEnabled(bool(self.cfg.get("remote_devices")))
+        rs = self.remote
+        if rs is not None and rs.running:
+            self.remote_status.setText(t("remote_running", rs.port, len(rs.online())))
+        elif rs is not None and rs.error:
+            self.remote_status.setText(t("remote_listen_fail", self.cfg.get("remote_port"), rs.error))
+        else:
+            self.remote_status.setText(t("remote_off"))
+
+    def _remote_new_code(self):
+        if self.remote is not None:
+            self.remote.renew_code()
+        else:
+            from .remote import new_code
+            self.cfg["remote_code"] = new_code()
+        from . import config
+        config.save(self.cfg)
+        self._remote_fill()
+
+    def _remote_forget(self):
+        it = self.phones.currentItem()
+        if it is None and self.phones.count() == 1:
+            it = self.phones.item(0)
+        dev = it.data(Qt.UserRole) if it is not None else None
+        if not dev:
+            return
+        if self.remote is not None:
+            self.remote.disconnect_device(dev)
+        else:
+            self.cfg["remote_devices"] = [d for d in self.cfg.get("remote_devices") or [] if d.get("id") != dev]
+        from . import config
+        config.save(self.cfg)
+        self._remote_fill()
+
+    def _remote_firewall(self):
+        from . import firewall
+        ok = firewall.allow(self.remote_port.value())
+        self.cfg["remote_fw"] = ok
+        self.fw_hint.setText(t("remote_fw_ok") if ok else t("remote_fw_hint"))
 
     def _page(self, title_key: str) -> QVBoxLayout:
         w = QWidget()
@@ -182,6 +315,8 @@ class SettingsDialog(QDialog):
         self.cfg["hidden_cols"] = [k for k, cb in self.cols.items() if not cb.isChecked()]
         for k, sp in self.spins.items():
             self.cfg[k] = int(sp.value())
+        self.cfg["remote"] = self.remote_on.isChecked()
+        self.cfg["remote_port"] = int(self.remote_port.value())
         super().accept()
 
 

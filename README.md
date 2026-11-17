@@ -17,6 +17,7 @@
 - **Удобство:** карточка Windows с обложкой и ⏮ ⏯ ⏭ (над громкостью и на экране блокировки), мини-плеер поверх окон (карточка или полоска, полупрозрачный, с волной), уровни по каналам 5.1 (под обложкой и вид комнаты — V), медиаклавиши клавиатуры (и в фоне), кнопки ⏮ ⏯ ⏭ в превью на панели задач, трей, таймер сна, горячие клавиши (F1 — список), RU / EN, **скины**: тёмный ArtCore и восемь светлых — Светлый, Бумага, Мята, Сакура, Небо, Лаванда, Персик, Снег (меню ☰ → Скин или Настройки; применяется сразу).
 - **Цвета от обложки:** волна, кнопка ▶, играющая строка, уровни и мягкий отсвет за обложкой берут цвета альбома (выключается в Настройках).
 - **Группы в плейлисте:** у альбома шапка с обложкой, исполнителем, годом, форматом, числом треков и временем; радиостанции и отдельные треки — своими группами; щелчок по шапке сворачивает группу. При поиске — обычный список.
+- **Пульт для Android** ([ArtCore Music Remote](https://github.com/Ruf790/artcore-music-remote)): все плейлисты и альбомы на телефоне, запуск любого трека, ⏯ ⏹ ⏮ ⏭, перемотка, громкость, повтор, случайный порядок, обложки. Включается в Настройки → Пульт; телефон находит ПК в сети Wi-Fi сам, первое подключение — по 4-значному коду. Только локальная сеть.
 - **Установщик:** «Открыть с помощью» для аудиофайлов, `.cue`, `.m3u`, `.pls` — у каждого формата своя иконка; регистрация в Settings → Apps → Default apps; пункты «Воспроизвести / Добавить в ArtCore Music» в меню папок. Автообновление с GitHub Releases. Есть portable-версия.
 
 ## Настройка 5.1 (Sound Blaster Z + DTS Connect)
@@ -33,6 +34,7 @@
 `build.bat` (нужны Python 3.12/3.13 x64, 7-Zip, Inno Setup 6.3+): скачивает `libmpv-2.dll`, собирает `.exe` (PyInstaller) и установщик.
 Запуск из исходников: `pip install -r requirements.txt`, `python tools/fetch_libmpv.py`, `python run.py`.
 Тесты (Linux: libmpv, ffmpeg, Xvfb): `xvfb-run -a python -m pytest tests`.
+Проверка пульта без телефона: `python tools/remote_client.py --find` (найти ПК в сети), `python tools/remote_client.py 192.168.1.10 --code 1234` (подключиться, показать плейлисты, play / pause / resume / stop).
 
 ---
 
@@ -45,6 +47,7 @@
 - Live waveform for internet radio (what plays now, moving right to left); mini player (card or strip, translucent, with the waveform), 5.1 channel level meters (under the cover and a room view — V), global media keys, ⏮ ⏯ ⏭ in the taskbar preview, shortcuts (F1), Russian / English, **skins**: the ArtCore dark style and eight light ones — Light, Paper, Mint, Sakura, Sky, Lavender, Peach, Snow (menu ☰ → Skin, or Settings; applied at once).
 - **Colours from the cover:** the waveform, the ▶ button, the playing row, the meters and a soft glow behind the cover take the album's colours (can be turned off in Settings).
 - **Playlist groups:** an album gets a header with its cover, artist, year, format, track count and length; radio stations and loose tracks get groups of their own; a click on a header folds the group. Searching shows a plain list.
+- **Android remote** ([ArtCore Music Remote](https://github.com/Ruf790/artcore-music-remote)): every playlist and album on the phone, start any track, ⏯ ⏹ ⏮ ⏭, seek, volume, repeat, shuffle, covers. Turn it on in Settings → Remote; the phone finds the PC on the Wi-Fi by itself and pairs once with a 4-digit code. Local network only.
 - Installer with "Open with", Default apps registration and a folder menu; self-update from GitHub Releases; a portable zip.
 
 License: GNU GPL v3. Third-party components: [THIRD-PARTY.md](THIRD-PARTY.md).

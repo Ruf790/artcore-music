@@ -337,6 +337,40 @@ STRINGS = {
     "upd_text":       ("Новая версия {0} (у вас {1}). Что нового:", "New version {0} (you have {1}). What's new:"),
     "upd_restart":    ("Плеер закроется, обновится и запустится снова. Плейлист и место в треке сохранятся.",
                        "The player closes, updates and starts again. The playlist and the position are kept."),
+    # the phone remote
+    "tab_remote":     ("Пульт", "Remote"),
+    "grp_remote":     ("Пульт для Android (приложение ArtCore Music Remote)", "Android remote (the ArtCore Music Remote app)"),
+    "opt_remote":     ("Включить пульт: управлять музыкой с телефона в той же сети Wi-Fi",
+                       "Turn the remote on: control the music from a phone on the same Wi-Fi"),
+    "remote_port":    ("Порт", "Port"),
+    "remote_code":    ("Код подключения", "Pairing code"),
+    "remote_new_code": ("Новый код", "New code"),
+    "remote_code_hint": ("Введите этот код в приложении при первом подключении телефона. Дальше телефон подключается сам, "
+                         "код больше не нужен. Подключиться можно только из домашней сети.",
+                         "Enter this code in the app the first time the phone connects. After that the phone connects "
+                         "by itself, without the code. Only phones on the home network can connect."),
+    "remote_addresses": ("Адрес этого ПК", "This PC's address"),
+    "grp_phones":     ("Телефоны", "Phones"),
+    "remote_forget":  ("Отключить", "Disconnect"),
+    "remote_no_phones": ("Пока ни одного телефона", "No phones yet"),
+    "remote_online":  ("подключён сейчас ({0})", "connected now ({0})"),
+    "remote_seen":    ("был {0}", "last seen {0}"),
+    "remote_running": ("Пульт работает на порту {0}. Подключено телефонов: {1}.", "The remote is on, port {0}. Phones connected: {1}."),
+    "remote_off":     ("Пульт выключен.", "The remote is off."),
+    "remote_listen_fail": ("Не удалось открыть порт {0} для пульта: {1}. Выберите другой порт.",
+                           "Could not open port {0} for the remote: {1}. Choose another port."),
+    "remote_phone_in": ("Пульт подключён: {0}", "Remote connected: {0}"),
+    "grp_firewall":   ("Брандмауэр Windows", "Windows Firewall"),
+    "remote_fw_hint": ("Брандмауэр Windows может не пускать телефон. Нажмите «Разрешить в брандмауэре» и подтвердите "
+                       "запрос Windows. Или вручную: Windows Security → Firewall & network protection → "
+                       "Allow an app through firewall → Change settings → найдите ArtCore Music (или Allow another app… → "
+                       "ArtCoreMusic.exe) и отметьте Private и Public.",
+                       "Windows Firewall may keep the phone out. Click «Allow in the firewall» and confirm the Windows "
+                       "prompt. Or by hand: Windows Security → Firewall & network protection → Allow an app through "
+                       "firewall → Change settings → find ArtCore Music (or Allow another app… → ArtCoreMusic.exe) and tick "
+                       "Private and Public."),
+    "remote_fw_allow": ("Разрешить в брандмауэре", "Allow in the firewall"),
+    "remote_fw_ok":   ("Готово: брандмауэр пускает телефоны из локальной сети.", "Done: the firewall lets phones on the local network in."),
     "upd_install":    ("Обновить", "Update"),
     "upd_later":      ("Позже", "Later"),
     "upd_downloading": ("Загрузка: {0} из {1} МБ", "Downloading: {0} of {1} MB"),
