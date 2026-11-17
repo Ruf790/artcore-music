@@ -898,7 +898,27 @@ class MainWindow(QMainWindow):
 
     def _restore_scroll(self):
         sc = self.pl.scroll
-        QTimer.singleShot(0, lambda: self.view.verticalScrollBar().setValue(sc))
+        pl = self.pl
+
+        def go():
+            if self.pl is not pl or self._show_playing_here():
+                return
+            self.view.verticalScrollBar().setValue(sc)
+        QTimer.singleShot(0, go)
+
+    def _show_playing_here(self) -> bool:
+        """1.8.1: the tab that is playing opens on its track (in the middle of the list), not where it was
+        last scrolled to — on start, on switching to it. False: nothing playing here (or the setting is off)."""
+        cur = self.engine.cur
+        if cur is None or self.engine.pl is not self.pl or not self.cfg.get("follow_playing", True) \
+                or self._searching:
+            return False
+        self._unfold_for(cur)
+        it = self.items.get(cur.uid)
+        if it is None or it.isHidden():
+            return False
+        self.view.scrollToItem(it, PlaylistView.PositionAtCenter)
+        return True
 
     def _tab_moved(self, a: int, b: int):
         self.pls.insert(b, self.pls.pop(a))
@@ -1453,6 +1473,14 @@ class MainWindow(QMainWindow):
         self.pl.clear()
         self._rebuild_list()
 
+    def _follow(self, it: QTreeWidgetItem, uid):
+        if self.items.get(uid) is not it or it.isHidden():
+            return
+        r = self.view.visualItemRect(it)
+        seen = r.isValid() and r.top() >= 0 and r.bottom() <= self.view.viewport().height()
+        if not seen:
+            self.view.scrollToItem(it, PlaylistView.PositionAtCenter)
+
     def jump_to_current(self):
         cur = self.engine.cur
         if cur is not None and self.engine.pl is not self.pl and self.engine.pl in self.pls:
@@ -1743,7 +1771,8 @@ class MainWindow(QMainWindow):
             it = self.items.get(tr.uid)
             if it is not None and not it.isHidden() and not self.view.underMouse() \
                     and self.cfg.get("follow_playing", True):
-                self.view.scrollToItem(it)
+                # once the group unfolded above has been laid out; out of sight → into the middle
+                QTimer.singleShot(0, lambda it=it, uid=tr.uid: self._follow(it, uid))
             if prev_uid != tr.uid:
                 self._notify(tr)
                 self._load_wave(tr)
