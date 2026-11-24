@@ -23,6 +23,17 @@ STRINGS = {
     "remove_missing": ("Убрать отсутствующие файлы", "Remove missing files"),
     "removed_n":      ("Убрано: {0}", "Removed: {0}"),
     "show_in_folder": ("Показать в папке", "Show in folder"),
+    # 1.8.2: «Open in ArtCore Sound»
+    "snd_open":       ("Открыть в ArtCore Sound", "Open in ArtCore Sound"),
+    "snd_missing":    ("ArtCore Sound не найден. Это звуковой редактор ArtCore — скачайте и установите его "
+                       "или укажите, где лежит ArtCoreSound.exe.",
+                       "ArtCore Sound was not found. It is the ArtCore audio editor — download and install it, "
+                       "or show where ArtCoreSound.exe is."),
+    "snd_browse":     ("Указать ArtCoreSound.exe…", "Locate ArtCoreSound.exe…"),
+    "snd_download":   ("Скачать", "Download"),
+    "snd_not_exe":    ("Это не ArtCoreSound.exe", "This is not ArtCoreSound.exe"),
+    "snd_failed":     ("Не удалось запустить ArtCore Sound: {0}", "Could not start ArtCore Sound: {0}"),
+    "snd_sent":       ("Открывается в ArtCore Sound", "Opening in ArtCore Sound"),
     "jump":           ("К текущему треку", "Go to the current track"),
     "sort":           ("Сортировать", "Sort"),
     "sort_path":      ("По папкам и именам файлов", "By folder and file name"),

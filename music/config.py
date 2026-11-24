@@ -80,6 +80,8 @@ DEFAULTS = {
     "mini_geometry": [],
     "last_dir":      "",
     "columns":       [],            # playlist column widths
+    # 1.8.2
+    "sound_exe":     "",            # ArtCoreSound.exe when it is not where the registry says («Open in ArtCore Sound»)
 }
 
 

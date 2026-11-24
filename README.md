@@ -18,6 +18,7 @@
 - **Цвета от обложки:** волна, кнопка ▶, играющая строка, уровни и мягкий отсвет за обложкой берут цвета альбома (выключается в Настройках).
 - **Группы в плейлисте:** у альбома шапка с обложкой, исполнителем, годом, форматом, числом треков и временем; радиостанции и отдельные треки — своими группами; щелчок по шапке сворачивает группу. При поиске — обычный список.
 - **Пульт для Android** ([ArtCore Music Remote](https://github.com/Ruf790/artcore-music-remote)): все плейлисты и альбомы на телефоне, запуск любого трека, ⏯ ⏹ ⏮ ⏭, перемотка, громкость, повтор, случайный порядок, обложки. Включается в Настройки → Пульт; телефон находит ПК в сети Wi-Fi сам, первое подключение — по 4-значному коду. Только локальная сеть.
+- **«Открыть в ArtCore Sound»** (меню трека): файл трека — или выделенных треков, у CUE-альбома его общий файл — открывается в звуковом редакторе [ArtCore Sound](https://github.com/Ruf790/artcore-sound). Программа находит его сама; если его нет — предлагает скачать или указать `ArtCoreSound.exe`.
 - **Установщик:** «Открыть с помощью» для аудиофайлов, `.cue`, `.m3u`, `.pls` — у каждого формата своя иконка; регистрация в Settings → Apps → Default apps; пункты «Воспроизвести / Добавить в ArtCore Music» в меню папок. Автообновление с GitHub Releases. Есть portable-версия.
 
 ## Настройка 5.1 (Sound Blaster Z + DTS Connect)
@@ -47,6 +48,7 @@
 - Live waveform for internet radio (what plays now, moving right to left); mini player (card or strip, translucent, with the waveform), 5.1 channel level meters (under the cover and a room view — V), global media keys, ⏮ ⏯ ⏭ in the taskbar preview, shortcuts (F1), Russian / English, **skins**: the ArtCore dark style and eight light ones — Light, Paper, Mint, Sakura, Sky, Lavender, Peach, Snow (menu ☰ → Skin, or Settings; applied at once).
 - **Colours from the cover:** the waveform, the ▶ button, the playing row, the meters and a soft glow behind the cover take the album's colours (can be turned off in Settings).
 - **Playlist groups:** an album gets a header with its cover, artist, year, format, track count and length; radio stations and loose tracks get groups of their own; a click on a header folds the group. Searching shows a plain list.
+- **«Open in ArtCore Sound»** (the track menu): the track's file — or those of the selected tracks, a CUE album's file once — opens in the [ArtCore Sound](https://github.com/Ruf790/artcore-sound) audio editor; not installed: download it or locate `ArtCoreSound.exe`.
 - **Android remote** ([ArtCore Music Remote](https://github.com/Ruf790/artcore-music-remote)): every playlist and album on the phone, start any track, ⏯ ⏹ ⏮ ⏭, seek, volume, repeat, shuffle, covers. Turn it on in Settings → Remote; the phone finds the PC on the Wi-Fi by itself and pairs once with a 4-digit code. Local network only.
 - Installer with "Open with", Default apps registration and a folder menu; self-update from GitHub Releases; a portable zip.
 
