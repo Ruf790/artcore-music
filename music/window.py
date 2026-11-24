@@ -1517,6 +1517,9 @@ class MainWindow(QMainWindow):
             if tr is not None and os.path.exists(tr.path):
                 m.addAction(style.icon("fa6s.folder-open"), t("show_in_folder"),
                             lambda p=tr.path: winint.show_in_explorer(p))
+            files = self._sound_files(tr)
+            if files:
+                m.addAction(style.icon("fa6s.wave-square"), t("snd_open"), lambda f=files: self.open_in_sound(f))
             m.addSeparator()
         m.addAction(style.icon("fa6s.crosshairs"), t("jump") + "\tCtrl+J", self.jump_to_current)
         if it is not None:
@@ -1539,6 +1542,56 @@ class MainWindow(QMainWindow):
             a.setChecked(key not in hidden)
             a.triggered.connect(lambda on, k=key: self._set_column(k, on))
         m.exec(self.view.viewport().mapToGlobal(pos))
+
+    # ── 1.8.2: «Open in ArtCore Sound» ────────────────────────
+    def _sound_files(self, clicked: Track | None = None) -> list[str]:
+        """The files for ArtCore Sound: the selected tracks (or the one clicked, when it is not among them) —
+        local files only (no radio), a CUE album's file once."""
+        out, seen = [], set()
+        tracks = self._selected_tracks()
+        if clicked is not None and clicked not in tracks:
+            tracks = [clicked]
+        for tr in tracks:
+            p = tr.path
+            if not p or is_url(p) or not os.path.isfile(p):
+                continue
+            key = os.path.normcase(os.path.abspath(p))
+            if key not in seen:
+                seen.add(key)
+                out.append(p)
+        return out
+
+    def open_in_sound(self, paths: list[str]) -> bool:
+        """The files in ArtCore Sound (the audio editor). Not found: download it or show where its exe is."""
+        from . import soundlink
+        while True:
+            try:
+                if soundlink.open_files(paths, self.cfg):
+                    self.toast.show_text(t("snd_sent"), 1500)
+                    return True
+            except OSError as e:
+                QMessageBox.warning(self, APP_TITLE, t("snd_failed", e.strerror or str(e)))
+                return False
+            box = QMessageBox(QMessageBox.Information, APP_TITLE, t("snd_missing"), QMessageBox.NoButton, self)
+            b_browse = box.addButton(t("snd_browse"), QMessageBox.AcceptRole)
+            b_get = box.addButton(t("snd_download"), QMessageBox.ActionRole)
+            box.addButton(QMessageBox.Cancel)
+            box.exec()
+            if box.clickedButton() is b_get:
+                from PySide6.QtCore import QUrl
+                from PySide6.QtGui import QDesktopServices
+                QDesktopServices.openUrl(QUrl(soundlink.DOWNLOAD_URL))
+                return False
+            if box.clickedButton() is not b_browse:
+                return False
+            path, _f = QFileDialog.getOpenFileName(self, t("snd_browse"), "", f"ArtCore Sound ({soundlink.EXE})")
+            if not path:
+                return False
+            if not soundlink.is_sound_exe(path):
+                QMessageBox.warning(self, APP_TITLE, t("snd_not_exe"))
+                continue
+            self.cfg["sound_exe"] = os.path.normpath(path)
+            config.save(self.cfg)
 
     # ── adding ────────────────────────────────────────────────
     def open_paths(self, paths: list[str], add: bool = False, play: bool = True):
